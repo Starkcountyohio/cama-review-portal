@@ -8,9 +8,9 @@ A staff review portal for the Stark County Auditor's Office, Assessment Division
 Staff use it to compare MLS listing data against CAMA (iasWorld) property records
 and review Grade/Condition mismatches weekly.
 
-**Live URL:** https://jaymjeffries-cyber.github.io/cama-review-portal/
-**Portal URL:** https://jaymjeffries-cyber.github.io/cama-review-portal/review_portal.html
-**GitHub repo:** https://github.com/jaymjeffries-cyber/cama-review-portal (public)
+**Live URL:** https://starkcountyohio.github.io/cama-review-portal/
+**Portal URL:** https://starkcountyohio.github.io/cama-review-portal/review_portal.html
+**GitHub repo:** https://github.com/Starkcountyohio/cama-review-portal (public)
 
 ---
 
