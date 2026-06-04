@@ -47,14 +47,32 @@ const { useState, useCallback, useMemo, useRef, useEffect } = React;
 const PRELOADED = window.PRELOADED_DATA || null;
 // XLSX loaded via CDN
 
-// ─── Full effective age lookup table (YRBLT → CDU → EFFYR) ───────────────────
-const EFF_AGE_TABLE = {"2023":{"EX":2023,"VG":2019,"GD":2014,"AV":2007,"FR":1997,"PR":1987},"2022":{"EX":2023,"VG":2018,"GD":2013,"AV":2007,"FR":1996,"PR":1986},"2021":{"EX":2023,"VG":2018,"GD":2012,"AV":2006,"FR":1996,"PR":1985},"2020":{"EX":2023,"VG":2017,"GD":2012,"AV":2006,"FR":1995,"PR":1984},"2019":{"EX":2022,"VG":2017,"GD":2012,"AV":2005,"FR":1994,"PR":1983},"2018":{"EX":2022,"VG":2017,"GD":2011,"AV":2004,"FR":1993,"PR":1982},"2017":{"EX":2022,"VG":2016,"GD":2010,"AV":2004,"FR":1992,"PR":1981},"2016":{"EX":2022,"VG":2016,"GD":2010,"AV":2003,"FR":1992,"PR":1980},"2015":{"EX":2021,"VG":2015,"GD":2010,"AV":2003,"FR":1991,"PR":1979},"2014":{"EX":2021,"VG":2015,"GD":2009,"AV":2002,"FR":1990,"PR":1978},"2013":{"EX":2021,"VG":2015,"GD":2008,"AV":2001,"FR":1989,"PR":1977},"2012":{"EX":2020,"VG":2014,"GD":2008,"AV":2001,"FR":1988,"PR":1976},"2011":{"EX":2020,"VG":2014,"GD":2008,"AV":2000,"FR":1988,"PR":1975},"2010":{"EX":2020,"VG":2013,"GD":2007,"AV":2000,"FR":1987,"PR":1974},"2009":{"EX":2020,"VG":2013,"GD":2006,"AV":1999,"FR":1986,"PR":1973},"2008":{"EX":2019,"VG":2013,"GD":2006,"AV":1998,"FR":1985,"PR":1972},"2007":{"EX":2019,"VG":2012,"GD":2006,"AV":1998,"FR":1984,"PR":1971},"2006":{"EX":2019,"VG":2012,"GD":2005,"AV":1997,"FR":1984,"PR":1970},"2005":{"EX":2018,"VG":2011,"GD":2004,"AV":1997,"FR":1983,"PR":1969},"2004":{"EX":2018,"VG":2011,"GD":2004,"AV":1996,"FR":1982,"PR":1968},"2003":{"EX":2018,"VG":2011,"GD":2004,"AV":1995,"FR":1981,"PR":1967},"2002":{"EX":2017,"VG":2010,"GD":2003,"AV":1995,"FR":1980,"PR":1966},"2001":{"EX":2017,"VG":2010,"GD":2002,"AV":1994,"FR":1980,"PR":1965},"2000":{"EX":2017,"VG":2009,"GD":2002,"AV":1994,"FR":1979,"PR":1964},"1999":{"EX":2016,"VG":2009,"GD":2002,"AV":1993,"FR":1978,"PR":1963},"1998":{"EX":2016,"VG":2009,"GD":2001,"AV":1992,"FR":1977,"PR":1962},"1997":{"EX":2016,"VG":2008,"GD":2000,"AV":1992,"FR":1976,"PR":1961},"1996":{"EX":2016,"VG":2008,"GD":2000,"AV":1991,"FR":1976,"PR":1960},"1995":{"EX":2015,"VG":2007,"GD":2000,"AV":1991,"FR":1975,"PR":1959},"1994":{"EX":2015,"VG":2007,"GD":1999,"AV":1990,"FR":1974,"PR":1958},"1993":{"EX":2015,"VG":2007,"GD":1998,"AV":1989,"FR":1973,"PR":1957},"1992":{"EX":2014,"VG":2006,"GD":1998,"AV":1989,"FR":1972,"PR":1956},"1991":{"EX":2014,"VG":2006,"GD":1998,"AV":1988,"FR":1972,"PR":1955},"1990":{"EX":2014,"VG":2005,"GD":1997,"AV":1988,"FR":1971,"PR":1954},"1989":{"EX":2014,"VG":2005,"GD":1996,"AV":1987,"FR":1970,"PR":1953},"1988":{"EX":2013,"VG":2005,"GD":1996,"AV":1986,"FR":1969,"PR":1952},"1987":{"EX":2013,"VG":2004,"GD":1996,"AV":1986,"FR":1968,"PR":1951},"1986":{"EX":2013,"VG":2004,"GD":1995,"AV":1985,"FR":1968,"PR":1950},"1985":{"EX":2012,"VG":2003,"GD":1994,"AV":1985,"FR":1967,"PR":1949},"1984":{"EX":2012,"VG":2003,"GD":1994,"AV":1984,"FR":1966,"PR":1948},"1983":{"EX":2012,"VG":2003,"GD":1994,"AV":1983,"FR":1965,"PR":1947},"1982":{"EX":2011,"VG":2002,"GD":1993,"AV":1983,"FR":1964,"PR":1946},"1981":{"EX":2011,"VG":2002,"GD":1992,"AV":1982,"FR":1964,"PR":1945},"1980":{"EX":2011,"VG":2001,"GD":1992,"AV":1982,"FR":1963,"PR":1944},"1979":{"EX":2010,"VG":2001,"GD":1992,"AV":1981,"FR":1962,"PR":1944},"1978":{"EX":2010,"VG":2001,"GD":1991,"AV":1980,"FR":1961,"PR":1944},"1977":{"EX":2010,"VG":2000,"GD":1990,"AV":1980,"FR":1960,"PR":1944},"1976":{"EX":2010,"VG":2000,"GD":1990,"AV":1979,"FR":1960,"PR":1944},"1975":{"EX":2009,"VG":1999,"GD":1990,"AV":1979,"FR":1959,"PR":1944},"1974":{"EX":2009,"VG":1999,"GD":1989,"AV":1978,"FR":1958,"PR":1944},"1973":{"EX":2009,"VG":1999,"GD":1988,"AV":1977,"FR":1957,"PR":1944},"1972":{"EX":2008,"VG":1998,"GD":1988,"AV":1977,"FR":1956,"PR":1944},"1971":{"EX":2008,"VG":1998,"GD":1988,"AV":1976,"FR":1956,"PR":1944},"1970":{"EX":2008,"VG":1997,"GD":1987,"AV":1976,"FR":1955,"PR":1944},"1969":{"EX":2008,"VG":1997,"GD":1986,"AV":1975,"FR":1954,"PR":1944},"1968":{"EX":2007,"VG":1997,"GD":1986,"AV":1974,"FR":1953,"PR":1944},"1967":{"EX":2007,"VG":1996,"GD":1986,"AV":1974,"FR":1952,"PR":1944},"1966":{"EX":2007,"VG":1996,"GD":1985,"AV":1973,"FR":1952,"PR":1944},"1965":{"EX":2006,"VG":1995,"GD":1984,"AV":1973,"FR":1951,"PR":1944},"1964":{"EX":2006,"VG":1995,"GD":1984,"AV":1972,"FR":1950,"PR":1944},"1963":{"EX":2006,"VG":1995,"GD":1984,"AV":1971,"FR":1949,"PR":1944},"1962":{"EX":2005,"VG":1994,"GD":1983,"AV":1971,"FR":1948,"PR":1944},"1961":{"EX":2005,"VG":1994,"GD":1982,"AV":1970,"FR":1948,"PR":1944},"1960":{"EX":2005,"VG":1993,"GD":1982,"AV":1970,"FR":1947,"PR":1944},"1959":{"EX":2004,"VG":1993,"GD":1982,"AV":1969,"FR":1946,"PR":1944},"1958":{"EX":2004,"VG":1993,"GD":1981,"AV":1968,"FR":1945,"PR":1944},"1957":{"EX":2004,"VG":1992,"GD":1980,"AV":1968,"FR":1944,"PR":1944},"1956":{"EX":2004,"VG":1992,"GD":1980,"AV":1967,"FR":1944,"PR":1944},"1955":{"EX":2003,"VG":1991,"GD":1980,"AV":1967,"FR":1944,"PR":1944},"1954":{"EX":2003,"VG":1991,"GD":1979,"AV":1966,"FR":1944,"PR":1944},"1953":{"EX":2003,"VG":1991,"GD":1978,"AV":1965,"FR":1944,"PR":1944},"1952":{"EX":2002,"VG":1990,"GD":1978,"AV":1965,"FR":1944,"PR":1944},"1951":{"EX":2002,"VG":1990,"GD":1978,"AV":1964,"FR":1944,"PR":1944},"1950":{"EX":2002,"VG":1989,"GD":1977,"AV":1964,"FR":1944,"PR":1944},"1949":{"EX":2002,"VG":1989,"GD":1976,"AV":1963,"FR":1944,"PR":1944},"1948":{"EX":2001,"VG":1989,"GD":1976,"AV":1962,"FR":1944,"PR":1944},"1947":{"EX":2001,"VG":1988,"GD":1976,"AV":1962,"FR":1944,"PR":1944},"1946":{"EX":2001,"VG":1988,"GD":1975,"AV":1961,"FR":1944,"PR":1944},"1945":{"EX":2000,"VG":1987,"GD":1974,"AV":1961,"FR":1944,"PR":1944}};
-const EFF_AGE_FLOOR = {"EX":2000,"VG":1987,"GD":1974,"AV":1960,"FR":1944,"PR":1944};
+// ─── Effective age suggestions (computed: YRBLT → CDU → EFFYR) ────────────────
+// Derived from the county "Effective age conversion table":
+//   EFFYR = (BASE_YEAR - offset) - slope × age, where age = BASE_YEAR - YRBLT.
+// Age caps at 80 (suggestions flatten for older homes); 1944 is the hard EFFYR
+// floor; new construction (age ≤ 1) never suggests above the actual year built.
+const EFF_AGE_BASE_YEAR = 2026;  // roll forward annually (source table was anchored to 2024)
+const EFF_AGE_PARAMS = {
+  EX:{offset:0,  slope:0.3}, VG:{offset:5,  slope:0.4}, GD:{offset:10, slope:0.5},
+  AV:{offset:16, slope:0.6}, FR:{offset:26, slope:0.8}, PR:{offset:36, slope:1.0},
+};
+const EFF_AGE_MAX_AGE   = 80;
+const EFF_AGE_MIN_EFFYR = 1944;
 
 function getAllCduSuggestions(yrblt) {
   if (!yrblt) return null;
-  const yr = String(Math.round(yrblt));
-  return EFF_AGE_TABLE[yr] || EFF_AGE_FLOOR;
+  const yr  = Math.round(yrblt);
+  const age = EFF_AGE_BASE_YEAR - yr;
+  const out = {};
+  for (const cdu in EFF_AGE_PARAMS) {
+    const { offset, slope } = EFF_AGE_PARAMS[cdu];
+    let v = Math.round(EFF_AGE_BASE_YEAR - offset - slope * Math.min(age, EFF_AGE_MAX_AGE));
+    v = Math.max(v, EFF_AGE_MIN_EFFYR);
+    if (age <= 1) v = Math.min(v, yr);  // brand-new builds: EFFYR ≤ YRBLT
+    out[cdu] = v;
+  }
+  return out;
 }
 
 // ─── CDU / Grade config ───────────────────────────────────────────────────────
@@ -952,6 +970,16 @@ function loadArchive(weekKey) {
     .catch(function() { return null; });
 }
 
+// Fetch the deployed build marker, cache-busted so we never read a stale copy
+// from the HTTP cache. Used to detect when a newer review_portal.html has been
+// published while a staff member's tab is still on an older cached build.
+function fetchLatestVersion() {
+  if (!GITHUB_PAGES_BASE) return Promise.resolve(null);
+  return fetch(GITHUB_PAGES_BASE + "/version.json?t=" + Date.now(), { cache: "no-store" })
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .catch(function() { return null; });
+}
+
 // --- Week Session helpers -----------------------
 // Sessions are stored as: { [weekKey]: { label, mismatches, perfects, statuses, windowId, createdAt } }
 // weekKey = "YYYY-WNN" e.g. "2026-W10"
@@ -1063,6 +1091,7 @@ function App() {
   const [search,       setSearch]       = useState("");
   const [page,         setPage]         = useState(0);
   const [view,         setView]         = useState("home");
+  const [newBuildAvailable, setNewBuildAvailable] = useState(false); // a newer review_portal.html is live
   const PAGE_SIZE = 15;
 
   // -- Derive current week key -----------------------------------------------
@@ -1105,9 +1134,16 @@ function App() {
     setView("portal");
     setPage(0);
     setStatuses((sess && sess.statuses) || {});
+    // Fresh build always wins: for the current week the PRELOADED data baked into
+    // this HTML is the newest build the user has loaded. Use it instead of any stale
+    // saved session or server archive left over from a previous build of the same
+    // week (otherwise an older perfect/mismatch classification can shadow it).
+    var freshBuild = isCurrentWeek && PRELOADED && (mismatches.length + perfects.length) > 0;
     // Set parcel data from session if available, else archive will fill it in below
-    var hasParcels = sess && ((sess.mismatches||[]).length + (sess.perfects||[]).length) > 0;
-    if (hasParcels) {
+    var hasParcels = !freshBuild && sess && ((sess.mismatches||[]).length + (sess.perfects||[]).length) > 0;
+    if (freshBuild) {
+      setPortalParcelData({ mismatches: mismatches, perfects: perfects });
+    } else if (hasParcels) {
       setPortalParcelData({ mismatches: sess.mismatches || [], perfects: sess.perfects || [] });
     }
     apiGetStatuses(weekKey).then(function(resp) {
@@ -1123,7 +1159,7 @@ function App() {
       setReviewers(resp.reviewers || {});
       setNotified(resp.notified || {});
     });
-    if (!hasParcels) {
+    if (!freshBuild && !hasParcels) {
       loadArchive(weekKey).then(function(archive) {
         if (!archive) return;
         var normMM = (archive.mismatches || []).map(function(r){ return normalizeRow(r,"mismatch"); });
@@ -1141,7 +1177,7 @@ function App() {
         });
       });
     }
-  }, [sessions, photoMap, currentWeekKey]);
+  }, [sessions, photoMap, currentWeekKey, mismatches, perfects]);
 
   // -- Save status changes back into the session -----------------------------
   const setStatus = useCallback(function(parcelId, status, note, address, zone) {
@@ -1328,6 +1364,27 @@ function App() {
     }
   }, []);
 
+  // -- Detect a newer deployed build and prompt staff to reload --------------
+  // version.json (written by build_portal.py next to review_portal.html) carries
+  // the generatedAt of the live build. We compare it to the generatedAt baked
+  // into THIS page; if they differ, a newer portal has been published and the
+  // user is on a cached copy. Checked on load and every 5 min while open.
+  useEffect(() => {
+    if (!PRELOADED || !GITHUB_PAGES_BASE) return;
+    var myBuild = (PRELOADED.generatedAt || "").trim();
+    if (!myBuild) return;
+    function check() {
+      fetchLatestVersion().then(function(v) {
+        if (v && v.generatedAt && v.generatedAt.trim() !== myBuild) {
+          setNewBuildAvailable(true);
+        }
+      });
+    }
+    check();
+    var id = setInterval(check, 5 * 60 * 1000);
+    return function() { clearInterval(id); };
+  }, []);
+
   // -- Hooks that must be before any early return ----------------------------
   const handleNeedWindowId = useCallback((pendingUrl) => {
     setWinIdModal({open:true, pendingUrl});
@@ -1379,10 +1436,22 @@ function App() {
       .catch(() => setNotifyModal({open:false, sending:false, sent:false, error:"Network error — check your connection"}));
   }, [portalWeek, portalLabel]);
 
+  // -- Reload prompt shown in both views when a newer build is live ----------
+  const reloadBanner = newBuildAvailable ? (
+    <div style={{position:"fixed",top:0,left:0,right:0,zIndex:9999,background:"#b45309",color:"#fff",fontFamily:"'DM Mono',monospace",fontSize:13,padding:"9px 16px",display:"flex",alignItems:"center",justifyContent:"center",gap:14,boxShadow:"0 2px 12px #00000066"}}>
+      <span> A newer version of this week's data has been published.</span>
+      <button onClick={()=>{ var u=new URL(location.href); u.searchParams.set("v", Date.now()); location.replace(u.toString()); }}
+        style={{background:"#fff",color:"#b45309",border:"none",borderRadius:6,padding:"4px 14px",fontWeight:700,cursor:"pointer",fontFamily:"'DM Mono',monospace",fontSize:12}}>
+        Reload now
+      </button>
+    </div>
+  ) : null;
+
   // -- HOME ------------------------------------------------------------------
   if (view==="home") return (
     <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%)",fontFamily:"'DM Sans',sans-serif",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 20px"}}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;600;700&family=Syne:wght@700;800&display=swap');*{box-sizing:border-box;}`}</style>
+      {reloadBanner}
 
       <div style={{textAlign:"center",marginBottom:28}}>
         <div style={{fontSize:12,letterSpacing:"0.2em",color:"#7dd3fc",fontFamily:"'DM Mono',monospace",marginBottom:12,textTransform:"uppercase"}}>STARK COUNTY AUDITOR'S OFFICE  PROPERTY ASSESSMENT</div>
@@ -1489,6 +1558,7 @@ function App() {
 
   return (
     <React.Fragment>
+    {reloadBanner}
     <div style={{minHeight:"100vh",background:"#f1f5f9",fontFamily:"'DM Sans',sans-serif"}}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;600;700&family=Syne:wght@700;800&display=swap');*{box-sizing:border-box;}::-webkit-scrollbar{width:6px;}::-webkit-scrollbar-track{background:#f1f5f9;}::-webkit-scrollbar-thumb{background:#94a3b8;border-radius:3px;}`}</style>
 
