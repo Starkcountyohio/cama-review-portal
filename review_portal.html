@@ -405,13 +405,16 @@ Respond ONLY with valid JSON — no markdown, no extra text:
         method: "POST",
         headers: { "Content-Type":"application/json", ...(sharedApiKey ? {"x-api-key": sharedApiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true"} : {}) },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          model: "claude-sonnet-4-6",
           max_tokens: 1500,
           messages: [{ role:"user", content: contentBlocks }],
         }),
       });
 
       const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data && data.error ? (data.error.message || data.error.type) : ("HTTP " + response.status));
+      }
       const raw = (data.content || []).map(b => b.text||"").join("").trim();
       const clean = raw.replace(/```json|```/g,"").trim();
       const parsed = JSON.parse(clean);
@@ -419,7 +422,7 @@ Respond ONLY with valid JSON — no markdown, no extra text:
       setState("result");
       try { localStorage.setItem(cacheKey, JSON.stringify(parsed)); } catch(e) {}
     } catch(err) {
-      setErrorMsg("Could not get suggestion. Check API access and try again.");
+      setErrorMsg("Could not get suggestion — " + (err && err.message ? err.message : "check API access") + ". (Key must be an Anthropic key: sk-ant-…)");
       setState("error");
     }
   }, [parcel, photoUrls]);

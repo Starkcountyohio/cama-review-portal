@@ -52,7 +52,7 @@ Portal Builder/
 - **Build:** Python 3, openpyxl, Pillow
 - **Backend:** None — fully static site
 - **Hosting:** GitHub Pages (public repo required for free Pages)
-- **AI:** Anthropic Claude API (claude-sonnet-4-20250514), called direct from browser
+- **AI:** Anthropic Claude API (claude-sonnet-4-6), called direct from browser — model ID must be a current, non-retired model (claude-sonnet-4-20250514 was retired 2026-06-15)
 - **API Key:** Set via ⚙️ button in portal bottom-right, stored in memory only — NEVER embed in HTML
 
 ---
