@@ -48,7 +48,7 @@ Portal Builder/
 ---
 
 ## Tech Stack
-- **Frontend:** React 18 (CDN, in-browser Babel), SheetJS, Google Fonts
+- **Frontend:** React 18 + Babel + SheetJS — **SELF-HOSTED in `lib/`** (NOT from CDN: county network blocks unpkg.com & cdn.sheetjs.com → blank dark-navy screen). In-browser Babel transpiles JSX. Google Fonts still external (cosmetic only). `lib/` must stay committed.
 - **Build:** Python 3, openpyxl, Pillow
 - **Backend:** None — fully static site
 - **Hosting:** GitHub Pages (public repo required for free Pages)
