@@ -170,18 +170,33 @@ image the official primary in iasWorld. In W33 only `5218304` qualified —
 `211596`'s secondary was a rear/side view and `213306`'s was an interior bedroom,
 so both got manual pulls instead.
 
-**Why a parcel shows up with secondaries but no primary.**
-`download_zillow_photos.py:365-371` rejects photo 1 outright when it is portrait
+**Why a parcel shows up with secondaries but no primary** (fixed in W34).
+`download_zillow_photos.py` used to reject photo 1 whenever it was portrait
 (`h > w`), on the theory that headshots are portrait and houses are landscape.
 When that fires, `-1` is written to *neither* folder while `-2/-3/-4` still land in
-`Photos_New_Portal` — that is the "3 secondaries, no primary" signature, visible in
-the mapping CSV as `Success` with `Photos = 3`. The screen is miscalibrated in both
-directions and is a known open issue: in W34 it **rejected two genuine houses**
-(`202027` and `209854`, both 576x768 portrait phone shots that then had to be
-pulled by hand) while **missing the actual headshot** on `247844`, which was
-240x240 — *square*, so `h > w` was false. The recurring W30/W32 headshot was the
-same 240x240. Until the threshold is retuned, expect portrait exteriors to need
-manual pulls, and never trust the check to have caught a headshot.
+`Photos_New_Portal` — the "3 secondaries, no primary" signature, visible in the
+mapping CSV as `Success` with `Photos = 3`. The rule was wrong both ways: in W34 it
+**rejected two genuine houses** (`202027`, `209854` — 576x768 portrait phone shots
+that then had to be pulled by hand) while **missing the actual headshot** on
+`247844`, which was 240x240 — *square*, so `h > w` was false. The recurring W30/W32
+headshot was the same 240x240.
+
+The screen now requires **small AND near-square** (`< 20 KB or < 300 px on the long
+edge`, aspect 0.9–1.1), which is the real signature of the headshot family.
+Validated against all 166 lead photos across W33+W34: zero genuine exteriors
+rejected, both headshot profiles caught.
+
+**The thresholds are thin on purpose — do not loosen them casually.** The two
+closest real data points are only:
+
+| | dimensions | bytes | verdict |
+|---|---|---|---|
+| `247844` (W34) headshot | 240x240 | 8,860 | reject |
+| `4307614` (W33) genuine house | 320x320 | 38,127 | keep |
+
+A 40 KB floor — the obvious first guess — drops that real house. Because the margin
+is this narrow, the **photo-review gate remains the actual defense**; this screen
+only trims the obvious cases.
 
 **Root cause, found in W34 — earlier versions of this guide had it wrong.** This
 was described for six weeks (W22, W24, W30, W32, W33, W34) as a copy that
