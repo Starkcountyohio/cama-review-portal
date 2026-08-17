@@ -1,4 +1,9 @@
-# Everything except the portal and archive data
+# Default posture: ignore everything except the published portal, its archive
+# data, and the pipeline scripts explicitly re-included at the bottom.
+#
+# This repo is PUBLIC (GitHub Pages requires it on the free tier). Before adding
+# anything, assume it will be world-readable forever.
+
 Automation Domination/
 CAMAvsMLSv6-main/
 MLS Scraper/
@@ -16,3 +21,28 @@ Manual Test*/
 MLSvsCAMA/
 ZillowPhotos/
 .claude/
+
+# ── Pipeline scripts: tracked deliberately ────────────────────────────────────
+# Tracked so the Monday pipeline survives a machine change — the fixes used to
+# live only on the build machine. Negations must come AFTER the broad rules above
+# (last match wins) and a directory must be un-ignored before files inside it can
+# be re-included.
+#
+# Scripts only. NOT tracked, deliberately:
+#   - credentials.py                      real secrets
+#   - fy_*.html/.png, matrix_icon_*.html  Playwright page dumps of logged-in
+#                                         iasWorld/MLS sessions (may contain
+#                                         session state and owner PII)
+#   - *.sql                               internal query with DB schema
+#   - test_cama_*.csv, perfect_matches.xlsx, photo folders   real parcel data
+# Pattern matters: un-ignore the directory, re-ignore ALL of its contents, then
+# re-include only *.py. Skipping the middle step pulls in the page dumps, the SQL
+# and the sample data too (verified — it does).
+!Automation Domination/
+Automation Domination/*
+!Automation Domination/*.py
+Automation Domination/credentials.py
+!ZillowPhotos/
+ZillowPhotos/*
+!ZillowPhotos/*.py
+!build_portal.py
