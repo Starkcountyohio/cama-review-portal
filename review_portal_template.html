@@ -1,0 +1,1864 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>MLS/CAMA Staff Review Portal — Stark County Auditor</title>
+
+  <!-- React 18 -->
+  <script crossorigin src="lib/react.production.min.js"></script>
+  <script crossorigin src="lib/react-dom.production.min.js"></script>
+
+  <!-- SheetJS for Excel parsing & export -->
+  <script src="lib/xlsx.full.min.js"></script>
+
+  <!-- Babel standalone to transpile JSX in-browser -->
+  <script src="lib/babel.min.js"></script>
+
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0f172a; }
+    #root { min-height: 100vh; }
+  </style>
+<!-- PRELOADED_DATA_INJECTION -->
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="react">
+const { useState, useCallback, useMemo, useRef, useEffect } = React;
+
+// ── Auto-load from pre-baked data if present ────────────────────────────────
+const PRELOADED = window.PRELOADED_DATA || null;
+// XLSX loaded via CDN
+
+// ─── Effective age suggestions (computed: YRBLT → CDU → EFFYR) ────────────────
+// Derived from the county "Effective age conversion table":
+//   EFFYR = (BASE_YEAR - offset) - slope × age, where age = BASE_YEAR - YRBLT.
+// Age caps at 80 (suggestions flatten for older homes); 1944 is the hard EFFYR
+// floor. EFFYR is also floored at YRBLT — iasWorld rejects an effective year
+// earlier than the year built (EFFYR ≥ YRBLT), so no column may drop below it.
+// New construction (age ≤ 1) and any home built 2018+ are additionally capped
+// at YRBLT (min == max == YRBLT), pinning every column to the build year.
+const EFF_AGE_BASE_YEAR = 2026;  // roll forward annually (source table was anchored to 2024)
+const EFF_AGE_PARAMS = {
+  EX:{offset:0,  slope:0.3}, VG:{offset:5,  slope:0.4}, GD:{offset:10, slope:0.5},
+  AV:{offset:16, slope:0.6}, FR:{offset:26, slope:0.8}, PR:{offset:36, slope:1.0},
+};
+const EFF_AGE_MAX_AGE   = 80;
+const EFF_AGE_MIN_EFFYR = 1944;
+
+function getAllCduSuggestions(yrblt) {
+  if (!yrblt) return null;
+  const yr  = Math.round(yrblt);
+  const age = EFF_AGE_BASE_YEAR - yr;
+  const out = {};
+  for (const cdu in EFF_AGE_PARAMS) {
+    const { offset, slope } = EFF_AGE_PARAMS[cdu];
+    let v = Math.round(EFF_AGE_BASE_YEAR - offset - slope * Math.min(age, EFF_AGE_MAX_AGE));
+    v = Math.max(v, EFF_AGE_MIN_EFFYR);
+    v = Math.max(v, yr);  // iasWorld rule: effective year can never be earlier than year built (EFFYR ≥ YRBLT)
+    if (age <= 1 || yr >= 2018) v = Math.min(v, yr);  // new builds / 2018+: pin EFFYR to YRBLT
+    out[cdu] = v;
+  }
+  return out;
+}
+
+// ─── CDU / Grade config ───────────────────────────────────────────────────────
+const CDU_CONFIG = {
+  EX: { label:"EX", full:"Excellent", color:"#166534", bg:"#dcfce7", border:"#86efac" },
+  VG: { label:"VG", full:"Very Good",  color:"#065f46", bg:"#d1fae5", border:"#6ee7b7" },
+  GD: { label:"GD", full:"Good",       color:"#1e40af", bg:"#dbeafe", border:"#93c5fd" },
+  AV: { label:"AV", full:"Average",    color:"#92400e", bg:"#fef3c7", border:"#fcd34d" },
+  FR: { label:"FR", full:"Fair",       color:"#9a3412", bg:"#fed7aa", border:"#fb923c" },
+  PR: { label:"PR", full:"Poor",       color:"#7f1d1d", bg:"#fee2e2", border:"#fca5a5" },
+};
+const CDU_ORDER = ["EX","VG","GD","AV","FR","PR"];
+
+// CDU numeric mapping for display (1=EX … 6=PR)
+const CDU_TO_NUM = { EX:1, VG:2, GD:3, AV:4, FR:5, PR:6 };
+const NUM_TO_CDU_LABEL = { 1:"Excellent", 2:"Very Good", 3:"Good", 4:"Average", 5:"Fair", 6:"Poor" };
+
+const STATUS_CONFIG = {
+  Reviewed:      { bg:"#d1fae5", border:"#059669", text:"#065f46", dot:"#059669" },
+  "Field Visit": { bg:"#dbeafe", border:"#2563eb", text:"#1e3a8a", dot:"#2563eb" },
+};
+const STATUSES = Object.keys(STATUS_CONFIG);
+
+
+// ─── Shared API Key Context ───────────────────────────────────────────────────
+const ApiKeyContext = React.createContext('');
+
+// ─── Parsers ──────────────────────────────────────────────────────────────────
+function parseXlsx(buffer) {
+  const wb = XLSX.read(buffer, { type:"array" });
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  return XLSX.utils.sheet_to_json(ws, { defval:"" });
+}
+
+function normalizeRow(row, fileType) {
+  const parcelId    = String(row["Parcel_ID"] || row["PARID"] || "").trim();
+  const address     = String(row["Address"]   || "").trim();
+  const city        = String(row["City"]      || "").trim();
+  const zip         = String(row["Zip"]       || row["Postal Code"] || "").trim();
+  const zone        = String(row["Zone"] || row["TAXDIST"] || "").trim();
+  const listing     = String(row["Listing_Number"] || row["Listing #"] || "").trim();
+  const salekey     = String(row["SALEKEY"]   || "").trim();
+  const addlParcels = String(row["ADDITIONAL_PARCELS"] || "").trim();
+  const zillowUrl   = String(row["Zillow_URL"]  || "").trim();
+  const parcelUrl   = String(row["Parcel_URL"]  || "").trim();
+  const yrblt       = row["YRBLT"]    ? Number(row["YRBLT"])    : null;
+  const effyr       = row["EFFYR"]    ? Number(row["EFFYR"])    : null;
+  const grade       = String(row["GRADE"] || "").trim();
+  const cdu         = String(row["CDU"]   || "").trim().toUpperCase();
+  const remarks     = String(row["Public_Remarks"] || "").trim();
+  // ── NEW fields ──
+  const fixbath     = row["FIXBATH"] !== "" && row["FIXBATH"] != null ? Number(row["FIXBATH"]) : null;
+  const fixhalf     = row["FIXHALF"] !== "" && row["FIXHALF"] != null ? Number(row["FIXHALF"]) : null;
+  const sfla        = row["SFLA"]    !== "" && row["SFLA"]    != null ? Number(row["SFLA"])    : null;
+
+  const base = { parcelId, address, city, zip, zone, listing, salekey, addlParcels,
+                 zillowUrl, parcelUrl, yrblt, effyr, grade, cdu, remarks,
+                 fixbath, fixhalf, sfla };
+
+  if (fileType === "mismatches") {
+    return { ...base, type:"mismatch",
+      fieldMls:   String(row["Field_MLS"]  || ""),
+      fieldCama:  String(row["Field_CAMA"] || ""),
+      mlsValue:   row["MLS_Value"]  ?? "",
+      camaValue:  row["CAMA_Value"] ?? "",
+      difference: String(row["Difference"] || ""),
+    };
+  }
+  return { ...base, type:"perfect",
+    fieldsCompared: String(row["Fields_Compared"] || ""),
+    fieldsList:     String(row["Fields_List"] || ""),
+  };
+}
+
+function groupByParcel(rows) {
+  const map = new Map();
+  for (const r of rows) {
+    if (!map.has(r.parcelId)) map.set(r.parcelId, { ...r, mismatches:[] });
+    if (r.type === "mismatch") {
+      map.get(r.parcelId).mismatches.push({
+        fieldMls:r.fieldMls, fieldCama:r.fieldCama,
+        mlsValue:r.mlsValue, camaValue:r.camaValue, difference:r.difference,
+      });
+    }
+  }
+  return Array.from(map.values());
+}
+
+function buildZillowUrl(address, city, zip) {
+  if (!address || !city) return "";
+  const clean = s => s.trim().replace(/[^\w\s-]/g,"").replace(/\s+/g,"-");
+  const zipClean = String(zip||"").match(/^\d{5}/)?.[0] || "";
+  return `https://www.zillow.com/homes/${clean(address)}-${clean(city)}-OH${zipClean?`-${zipClean}`:""}_rb/`;
+}
+
+// ─── Extract parcel ID from photo filename (e.g. "102774-1.jpg" → "102774") ──
+function photoKeyFromFilename(name) {
+  const base = name.replace(/\.[^.]+$/, ""); // strip extension
+  const match = base.match(/^(\d+)/);
+  return match ? match[1] : base;
+}
+
+// ─── Tiny shared components ───────────────────────────────────────────────────
+function Dot({ color }) {
+  return <span style={{display:"inline-block",width:8,height:8,borderRadius:"50%",background:color,marginRight:6,flexShrink:0}} />;
+}
+function Badge({ label }) {
+  const cfg = STATUS_CONFIG[label];
+  if (!cfg) return null;
+  return (
+    <span style={{display:"inline-flex",alignItems:"center",background:cfg.bg,border:`1px solid ${cfg.border}`,color:cfg.text,borderRadius:6,padding:"2px 8px",fontSize:11,fontWeight:700,letterSpacing:"0.04em",fontFamily:"'DM Mono',monospace"}}>
+      <Dot color={cfg.dot}/>{label.toUpperCase()}
+    </span>
+  );
+}
+function StatusButton({ label, active, onClick }) {
+  const cfg = STATUS_CONFIG[label];
+  return (
+    <button onClick={onClick} style={{padding:"8px 18px",borderRadius:8,fontSize:14,fontWeight:700,fontFamily:"'DM Mono',monospace",letterSpacing:"0.04em",cursor:"pointer",transition:"all 0.15s",border:active?`2px solid ${cfg.border}`:"2px solid transparent",background:active?cfg.bg:"#f9fafb",color:active?cfg.text:"#6b7280",boxShadow:active?`0 0 0 2px ${cfg.border}22`:"none"}}>
+      {label}
+    </button>
+  );
+}
+function LinkButton({ href, icon, label, accentColor, windowName, onIntercept }) {
+  const isValid = href && href!=="nan" && href.trim()!=="" && href.startsWith("http");
+  const base = {display:"inline-flex",alignItems:"center",gap:6,padding:"8px 16px",borderRadius:8,fontSize:14,fontWeight:700,fontFamily:"'DM Sans',sans-serif",transition:"all 0.15s",whiteSpace:"nowrap"};
+  if (!isValid) return <span style={{...base,border:"1px solid #e5e7eb",background:"#f9fafb",color:"#d1d5db",cursor:"not-allowed",userSelect:"none"}}>{icon} {label}</span>;
+  const handleClick = (e) => {
+    e.preventDefault();
+    if (onIntercept) { onIntercept(e); return; }
+    // Chrome requires explicit width/height to open a true new window (not a tab)
+    // Same windowName = reuses that window each click — perfect for dedicated monitors
+    const features = 'width=1400,height=900,left=100,top=50,toolbar=yes,menubar=yes,scrollbars=yes,resizable=yes,location=yes,status=yes';
+    window.open(href, windowName || label, features);
+  };
+  return (
+    <a href={href} onClick={handleClick}
+      style={{...base,border:`1.5px solid ${accentColor}44`,background:`${accentColor}0d`,color:accentColor,textDecoration:"none",cursor:"pointer"}}
+      onMouseEnter={e=>{e.currentTarget.style.background=`${accentColor}22`;e.currentTarget.style.borderColor=accentColor;}}
+      onMouseLeave={e=>{e.currentTarget.style.background=`${accentColor}0d`;e.currentTarget.style.borderColor=`${accentColor}44`;}}
+    >{icon} {label}</a>
+  );
+}
+
+// ─── Effective Age Panel ──────────────────────────────────────────────────────
+function EffectiveAgePanel({ yrblt, effyr, cdu, grade }) {
+  const suggestions = useMemo(() => getAllCduSuggestions(yrblt), [yrblt]);
+  if (!yrblt || !suggestions) return null;
+  return (
+    <div style={{margin:"10px 0 8px",background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:10,overflow:"hidden"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"7px 12px",background:"#f1f5f9",borderBottom:"1px solid #e2e8f0"}}>
+        <span style={{fontSize:12,fontWeight:700,color:"#334155",fontFamily:"'DM Mono',monospace",letterSpacing:"0.06em"}}>EFFECTIVE AGE SUGGESTIONS</span>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <span style={{fontSize:13,color:"#475569",fontFamily:"'DM Mono',monospace"}}>YRBLT <strong style={{color:"#1e293b"}}>{yrblt}</strong></span>
+          <span style={{fontSize:13,color:"#475569",fontFamily:"'DM Mono',monospace"}}>GRADE <strong style={{color:"#1e293b"}}>{grade||"—"}</strong></span>
+          <span style={{fontSize:13,color:"#475569",fontFamily:"'DM Mono',monospace"}}>Current EFFYR <strong style={{color:"#1e293b"}}>{effyr||"—"}</strong></span>
+        </div>
+      </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(6,1fr)",gap:0}}>
+        {CDU_ORDER.map((duCode,i) => {
+          const cfg = CDU_CONFIG[duCode];
+          const sugEff = suggestions[duCode];
+          const isCurrent = duCode===cdu;
+          const effChanged = isCurrent && effyr && sugEff && effyr!==sugEff;
+          return (
+            <div key={duCode} style={{padding:"10px 6px",textAlign:"center",background:isCurrent?cfg.bg:"#fff",borderRight:i<5?"1px solid #e2e8f0":"none",position:"relative",outline:isCurrent?`2px solid ${cfg.border}`:"none",outlineOffset:-1,zIndex:isCurrent?1:0}}>
+              <div style={{fontSize:14,fontWeight:800,fontFamily:"'DM Mono',monospace",color:isCurrent?cfg.color:"#475569",letterSpacing:"0.06em",marginBottom:3}}>{duCode}</div>
+              <div style={{fontSize:12,fontWeight:600,color:isCurrent?cfg.color:"#475569",fontFamily:"'DM Sans',sans-serif",marginBottom:5}}>{cfg.full}</div>
+              <div style={{fontSize:21,fontWeight:800,fontFamily:"'DM Mono',monospace",color:isCurrent?cfg.color:"#334155",letterSpacing:"-0.01em"}}>{sugEff??"—"}</div>
+              {isCurrent&&<div style={{marginTop:5,fontSize:10,fontWeight:700,fontFamily:"'DM Mono',monospace",color:cfg.color,letterSpacing:"0.05em",background:cfg.border+"33",borderRadius:3,padding:"2px 6px",display:"inline-block"}}>CURRENT</div>}
+              {effChanged&&<div style={{marginTop:4,fontSize:13,fontWeight:700,fontFamily:"'DM Mono',monospace",color:"#dc2626",letterSpacing:"0.02em"}}>⚠ was {effyr}</div>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ─── AI Grade/Condition Suggestion Panel ──────────────────────────────────────
+function GradeSuggestPanel({ parcel, photoUrls }) {
+  const sharedApiKey = React.useContext(ApiKeyContext);
+  const [state,      setState]      = useState("idle");  // idle | loading | result | error
+  const [result,     setResult]     = useState(null);
+  const [errorMsg,   setErrorMsg]   = useState("");
+  const [fromCache,  setFromCache]  = useState(false);
+
+  // Cache key: parcel + portal week so results survive page reloads but reset each new week
+  const cacheKey = `ai_${parcel.parcelId}_${((window.PRELOADED_DATA||{}).weekLabel||'local').replace(/\W/g,'_')}`;
+
+  // Load cached result on mount — skip API call entirely if already run this week
+  useEffect(() => {
+    try {
+      const cached = localStorage.getItem(cacheKey);
+      if (cached) {
+        setResult(JSON.parse(cached));
+        setState("result");
+        setFromCache(true);
+      }
+    } catch(e) { /* ignore corrupt cache */ }
+  }, [cacheKey]);
+
+  const hasPhoto = !!(photoUrls && photoUrls.length > 0);
+
+  const runSuggestion = useCallback(async () => {
+    setState("loading");
+    setResult(null);
+    setErrorMsg("");
+    setFromCache(false);
+
+    const bathStr = [
+      parcel.fixbath != null ? `${parcel.fixbath} full bath${parcel.fixbath!==1?"s":""}` : null,
+      parcel.fixhalf != null && parcel.fixhalf > 0 ? `${parcel.fixhalf} half bath` : null,
+    ].filter(Boolean).join(", ");
+
+    const textPrompt = `You are a certified property appraiser assistant for the Stark County Auditor's Office in Ohio. Suggest a Grade and Condition based on all available evidence.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+GRADE SCALE (2024 Stark County)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+X+/X/X-  Excellent   — architect-designed, exceptional custom materials
+A+/A/A-  Very Good   — high-quality, custom ornamentation, premium finishes
+B+/B/B-  Good        — above-average, upgraded materials
+C+/C/C-  Average     — mass-produced, meets code, stock materials
+D        Fair        — below-average materials, plain interior
+E        Low         — basic minimum code
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONDITION SCALE (1–5)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1 Excellent  — near new, 10–12 pluses
+2 Good       — well maintained, 4–9 pluses
+3 Average    — normal wear, 0–3 pluses/minuses
+4 Fair       — deferred maintenance, 4–9 minuses
+5 Poor       — major repairs needed, 10–12 minuses
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STARK COUNTY EMPIRICAL DATA — 388 PARCELS — Trained July 2026
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+These are ACTUAL appraiser decisions from this office. Weight heavily.
+
+CHANGE RATES:
+- Appraisers changed CDU on 25% of parcels, Grade on 13%
+- 34% had at least one change; 66% confirmed unchanged
+- Most common CDU changes: AV→GD (38x), GD→AV (25x), VG→GD (9x), GD→VG (6x), AV→FR (5x), EX→VG (3x)
+- When uncertain between two CDU values lean toward GD or AV — these are the most common outcomes
+
+HARD NEGATIVE LANGUAGE = STRONGEST SIGNAL:
+- "Estate sale / cash only / sold as-is / vacant / abandoned" → 40% CDU change rate (n=10)
+- These phrases = almost certainly FR or PR. Do not soften this.
+
+CDU UPGRADE SIGNALS (ranked by Stark County predictive power):
+- "new a/c" → 2/50 upgrades (4%, 3.9x baseline)
+- "remodeled" → 15/50 upgrades (30%, 3.4x baseline)
+- "turnkey" → 3/50 upgrades (6%, 3.3x baseline)
+- "new windows" → 6/50 upgrades (12%, 2.9x baseline)
+- "newer roof" → 3/50 upgrades (6%, 2.3x baseline)
+- "meticulously" → 4/50 upgrades (8%, 2.1x baseline)
+- "renovated" → 5/50 upgrades (10%, 1.9x baseline)
+- "move-in ready" → 14/50 upgrades (28%, 1.8x baseline)
+
+CDU DOWNGRADE SIGNALS (ranked by Stark County predictive power):
+- "fixer" → 2/46 downgrades (4%, 5.6x baseline)
+- "as-is" → 4/46 downgrades (9%, 3.7x baseline)
+- "sold as-is" → 2/46 downgrades (4%, 3.4x baseline)
+- "tlc" → 3/46 downgrades (7%, 2.5x baseline)
+- "investor" → 4/46 downgrades (9%, 1.7x baseline)
+- "potential" → 13/46 downgrades (28%, 1.6x baseline)
+
+YEAR BUILT: Homes with median YRBLT 1952 CAN be upgraded if truly renovated — age alone does not determine CDU.
+
+LOCATION/SCHOOL FLUFF — IGNORE COMPLETELY:
+"Great location / award-winning schools / minutes from shopping / desirable / sought-after"
+appeared at 32% in changed vs 38% in unchanged parcels — zero predictive value.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EVIDENCE WEIGHTING HIERARCHY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. PHOTO — highest weight. Roof, siding, windows, overall upkeep. If photo shows deferred maintenance, trust it over ANY positive remarks.
+2. HARD NEGATIVE LANGUAGE — nearly always FR/PR regardless of other language
+3. SPECIFIC NAMED SYSTEM UPDATES — remodeled/renovated/new furnace/new windows/updated kitchen+bath in combination
+4. SOFT NEGATIVE LANGUAGE — opportunity/investor/as-is = strong lean toward FR
+5. POSITIVE GENERIC LANGUAGE — lowest weight. "Beautifully updated/move-in ready" appeared on AV and FR properties. Do NOT use alone.
+6. COSMETIC ONLY — fresh paint/new carpet/stainless/hardwood alone = no CDU change warranted
+
+PHOTO vs REMARKS CONFLICT: If photo shows worn exterior but remarks claim "move-in ready" — TRUST THE PHOTO. Flag the conflict in rationale.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PROPERTY DATA
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Address: \${parcel.address}, \${parcel.city} OH \${parcel.zip}
+Year Built: \${parcel.yrblt || "unknown"}
+Above-Grade Sq Ft (SFLA): \${parcel.sfla != null ? parcel.sfla : "unknown"}
+\${bathStr ? \`Bathrooms: \${bathStr}\` : ""}
+Current CAMA Grade: \${parcel.grade || "unknown"}
+Current CAMA CDU: \${parcel.cdu || "unknown"}
+MLS Public Remarks: \${parcel.remarks || "(none provided)"}
+\${hasPhoto ? "Front exterior photo attached — weight this heavily." : "No photo — reduce confidence, rely on remarks and year built only."}
+
+Respond ONLY with valid JSON — no markdown, no extra text:
+{
+  "suggestedGrade": "e.g. B+",
+  "suggestedCondition": 3,
+  "conditionLabel": "e.g. Average",
+  "gradeConfidence": "Low|Moderate|High",
+  "conditionConfidence": "Low|Moderate|High",
+  "rationale": "2–3 sentences. Cite specific evidence used, flag realtor bias detected, note any photo vs. remarks conflict."
+}`
+
+    try {
+      const contentBlocks = [];
+
+      // Add up to 4 photos if available (exterior first, then additional views)
+      if (hasPhoto) {
+        for (const url of photoUrls.slice(0, 4)) {
+          const base64 = url.split(",")[1];
+          const mimeMatch = url.match(/data:([^;]+);/);
+          const mediaType = mimeMatch ? mimeMatch[1] : "image/jpeg";
+          contentBlocks.push({
+            type: "image",
+            source: { type:"base64", media_type: mediaType, data: base64 }
+          });
+        }
+      }
+
+      contentBlocks.push({ type:"text", text: textPrompt });
+
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type":"application/json", ...(sharedApiKey ? {"x-api-key": sharedApiKey, "anthropic-version": "2023-06-01", "anthropic-dangerous-direct-browser-access": "true"} : {}) },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-6",
+          max_tokens: 1500,
+          // Force structured output via a single tool the model MUST call.
+          // claude-sonnet-4-6 rejects assistant-message prefill (400) and is not a
+          // structured-outputs model, so forced tool_choice is the reliable way to
+          // get clean JSON — no conversational preambles ("I notice you…") to parse.
+          tools: [{
+            name: "record_grade_condition",
+            description: "Record the suggested Grade and Condition for the property based on all available evidence.",
+            input_schema: {
+              type: "object",
+              properties: {
+                suggestedGrade:      { type: "string" },
+                suggestedCondition:  { type: "integer" },
+                conditionLabel:      { type: "string" },
+                gradeConfidence:     { type: "string", enum: ["Low","Moderate","High"] },
+                conditionConfidence: { type: "string", enum: ["Low","Moderate","High"] },
+                rationale:           { type: "string" },
+              },
+              required: ["suggestedGrade","suggestedCondition","conditionLabel","gradeConfidence","conditionConfidence","rationale"],
+            },
+          }],
+          tool_choice: { type: "tool", name: "record_grade_condition" },
+          messages: [{ role:"user", content: contentBlocks }],
+        }),
+      });
+
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data && data.error ? (data.error.message || data.error.type) : ("HTTP " + response.status));
+      }
+      // Forced tool_choice → the answer is the tool_use block's structured input.
+      // No JSON.parse needed; the API validated it against the tool schema.
+      const toolUse = (data.content || []).find(b => b.type === "tool_use" && b.input);
+      if (!toolUse) {
+        const txt = (data.content || []).map(b => b.text||"").join("").trim();
+        throw new Error("model did not return a suggestion" + (txt ? " — it replied: " + txt.slice(0,100) : ""));
+      }
+      const parsed = toolUse.input;
+      setResult(parsed);
+      setState("result");
+      try { localStorage.setItem(cacheKey, JSON.stringify(parsed)); } catch(e) {}
+    } catch(err) {
+      setErrorMsg("Could not get suggestion — " + (err && err.message ? err.message : "check API access") + ". (Key must be an Anthropic key: sk-ant-…)");
+      setState("error");
+    }
+  }, [parcel, photoUrls]);
+
+  const confidenceColor = (c) => c==="High" ? "#15803d" : c==="Moderate" ? "#b45309" : "#6b7280";
+
+  // Grade chip color - map grade letter to rough tier
+  const gradeChipColor = (g) => {
+    if (!g) return { bg:"#f1f5f9", color:"#475569", border:"#cbd5e1" };
+    const letter = g[0].toUpperCase();
+    if (letter==="X") return { bg:"#faf5ff", color:"#7e22ce", border:"#d8b4fe" };
+    if (letter==="A") return { bg:"#f0fdf4", color:"#166534", border:"#86efac" };
+    if (letter==="B") return { bg:"#eff6ff", color:"#1e40af", border:"#93c5fd" };
+    if (letter==="C") return { bg:"#fefce8", color:"#854d0e", border:"#fde047" };
+    if (letter==="D") return { bg:"#fff7ed", color:"#9a3412", border:"#fdba74" };
+    return               { bg:"#fef2f2", color:"#7f1d1d", border:"#fca5a5" };
+  };
+
+  const condChipColor = (n) => {
+    if (n<=1) return { bg:"#dcfce7", color:"#166534", border:"#86efac" };   // Excellent
+    if (n===2) return { bg:"#d1fae5", color:"#065f46", border:"#6ee7b7" };  // Very Good
+    if (n===3) return { bg:"#dbeafe", color:"#1e40af", border:"#93c5fd" };  // Good
+    if (n===4) return { bg:"#fef9c3", color:"#854d0e", border:"#fde047" };  // Average
+    if (n===5) return { bg:"#fed7aa", color:"#9a3412", border:"#fb923c" };  // Fair
+    return             { bg:"#fee2e2", color:"#7f1d1d", border:"#fca5a5" }; // Poor
+  };
+
+  return (
+    <div style={{margin:"8px 0",background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:10}}>
+      {/* Header */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"7px 12px",background:"linear-gradient(90deg,#1e293b,#1e3a5f)",borderBottom:"1px solid #e2e8f0"}}>
+        <div style={{display:"flex",alignItems:"center",gap:7}}>
+          <span style={{fontSize:11,fontWeight:700,color:"#7dd3fc",fontFamily:"'DM Mono',monospace",letterSpacing:"0.06em"}}>AI GRADE &amp; CONDITION</span>
+          {hasPhoto && <span style={{fontSize:9,background:"#0ea5e922",border:"1px solid #0ea5e966",color:"#38bdf8",borderRadius:4,padding:"1px 6px",fontFamily:"'DM Mono',monospace",fontWeight:700}}>{photoUrls.length > 1 ? photoUrls.length + " PHOTOS" : "PHOTO"}</span>}
+          {fromCache && <span style={{fontSize:9,background:"#14532d22",border:"1px solid #16653466",color:"#4ade80",borderRadius:4,padding:"1px 6px",fontFamily:"'DM Mono',monospace",fontWeight:700}}>CACHED</span>}
+        </div>
+        {state !== "loading" && (
+          <button onClick={sharedApiKey ? runSuggestion : null}
+            title={sharedApiKey ? "" : "Set API key first - click  bottom-right"}
+            style={{fontSize:11,fontWeight:700,fontFamily:"'DM Mono',monospace",letterSpacing:"0.04em",cursor:sharedApiKey?"pointer":"not-allowed",background:sharedApiKey?"#2563eb":"#334155",color:sharedApiKey?"#fff":"#64748b",border:"none",borderRadius:6,padding:"4px 12px",transition:"background 0.15s"}}
+            onMouseEnter={e=>{if(sharedApiKey)e.currentTarget.style.background="#1d4ed8";}}
+            onMouseLeave={e=>{if(sharedApiKey)e.currentTarget.style.background="#2563eb";}}
+          >
+            {state==="result" ? "Re-run Re-run" : " Suggest"}
+          </button>
+        )}
+        {state === "loading" && (
+          <span style={{fontSize:11,color:"#94a3b8",fontFamily:"'DM Mono',monospace",display:"flex",alignItems:"center",gap:6}}>
+            <span style={{display:"inline-block",width:10,height:10,border:"2px solid #3b82f6",borderTopColor:"transparent",borderRadius:"50%",animation:"spin 0.7s linear infinite"}} />
+            Analyzing...
+          </span>
+        )}
+      </div>
+
+      {/* Idle state */}
+      {state==="idle" && (
+        sharedApiKey ? (
+          <div style={{padding:"10px 12px",fontSize:11,color:"#94a3b8",fontFamily:"'DM Mono',monospace",textAlign:"center"}}>
+            Click  Suggest to get an AI-assisted Grade &amp; Condition recommendation
+          </div>
+        ) : (
+          <div style={{padding:"10px 12px",display:"flex",alignItems:"center",gap:10,background:"#1e1a0e",borderTop:"1px solid #78350f44"}}>
+            <span style={{fontSize:16}}></span>
+            <div>
+              <div style={{fontSize:11,fontWeight:700,color:"#fbbf24",fontFamily:"'DM Mono',monospace",marginBottom:2}}>API KEY NOT SET</div>
+              <div style={{fontSize:10,color:"#92400e",fontFamily:"'DM Sans',sans-serif",lineHeight:1.5}}>
+                Click the <strong style={{color:"#fbbf24"}}> button</strong> in the bottom-right corner of the page, paste the Anthropic API key, then click Save. AI suggestions will work for the rest of your session.
+              </div>
+            </div>
+          </div>
+        )
+      )}
+
+      {/* Error */}
+      {state==="error" && (
+        <div style={{padding:"10px 12px"}}>
+          <div style={{fontSize:11,color:"#dc2626",fontFamily:"'DM Mono',monospace",marginBottom:6}}>{errorMsg}</div>
+          {!sharedApiKey && (
+            <div style={{fontSize:10,color:"#92400e",fontFamily:"'DM Sans',sans-serif",background:"#1e1a0e",border:"1px solid #78350f44",borderRadius:6,padding:"6px 10px",lineHeight:1.5}}>
+               Most likely cause: API key not set. Click  bottom-right   paste key   Save.
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Result */}
+      {state==="result" && result && (() => {
+        const gc = gradeChipColor(result.suggestedGrade);
+        const cc = condChipColor(result.suggestedCondition);
+        return (
+          <div style={{padding:"10px 12px"}}>
+            {/* Grade + Condition chips */}
+            <div style={{display:"flex",gap:8,marginBottom:8,flexWrap:"wrap",alignItems:"center"}}>
+              <div style={{display:"flex",flexDirection:"column",alignItems:"center",background:gc.bg,border:`1.5px solid ${gc.border}`,borderRadius:8,padding:"6px 14px",minWidth:70}}>
+                <span style={{fontSize:9,fontWeight:700,color:gc.color,fontFamily:"'DM Mono',monospace",letterSpacing:"0.08em",marginBottom:2}}>GRADE</span>
+                <span style={{fontSize:28,fontWeight:800,color:gc.color,fontFamily:"'DM Mono',monospace",lineHeight:1}}>{result.suggestedGrade}</span>
+              </div>
+              <div style={{display:"flex",flexDirection:"column",alignItems:"center",background:cc.bg,border:`1.5px solid ${cc.border}`,borderRadius:8,padding:"6px 14px",minWidth:70}}>
+                <span style={{fontSize:9,fontWeight:700,color:cc.color,fontFamily:"'DM Mono',monospace",letterSpacing:"0.08em",marginBottom:2}}>CONDITION</span>
+                <span style={{fontSize:28,fontWeight:800,color:cc.color,fontFamily:"'DM Mono',monospace",lineHeight:1}}>{result.suggestedCondition}</span>
+                <span style={{fontSize:9,color:cc.color,fontFamily:"'DM Sans',sans-serif",marginTop:1}}>{result.conditionLabel}</span>
+              </div>
+              {/* Compare to current + Confidence */}
+              <div style={{flex:1,minWidth:160,background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:8,padding:"6px 10px"}}>
+                {(parcel.grade || parcel.cdu) && (
+                  <>
+                    <div style={{fontSize:9,fontWeight:700,color:"#64748b",fontFamily:"'DM Mono',monospace",letterSpacing:"0.06em",marginBottom:4}}>CURRENT CAMA</div>
+                    <div style={{display:"flex",gap:10,marginBottom:6}}>
+                      {parcel.grade && <span style={{fontSize:12,fontFamily:"'DM Mono',monospace",color:"#374151"}}>Grade: <strong>{parcel.grade}</strong></span>}
+                      {parcel.cdu && <span style={{fontSize:12,fontFamily:"'DM Mono',monospace",color:"#374151"}}>CDU: <strong>{parcel.cdu}</strong></span>}
+                    </div>
+                  </>
+                )}
+                <div style={{display:"flex",flexDirection:"column",gap:3}}>
+                  <div style={{fontSize:9,fontFamily:"'DM Mono',monospace",color:"#64748b",whiteSpace:"nowrap"}}>
+                    Grade conf: <strong style={{color:confidenceColor(result.gradeConfidence)}}>{result.gradeConfidence ?? "—"}</strong>
+                  </div>
+                  <div style={{fontSize:9,fontFamily:"'DM Mono',monospace",color:"#64748b",whiteSpace:"nowrap"}}>
+                    Cond conf: <strong style={{color:confidenceColor(result.conditionConfidence)}}>{result.conditionConfidence ?? "—"}</strong>
+                  </div>
+                </div>
+              </div>
+            </div>
+            {/* Rationale */}
+            <div style={{fontSize:14,color:"#374151",fontFamily:"'DM Sans',sans-serif",lineHeight:1.7,background:"#fff",border:"1px solid #e2e8f0",borderRadius:7,padding:"10px 14px"}}>
+              {result.rationale}
+            </div>
+            <div style={{fontSize:9,color:"#9ca3af",fontFamily:"'DM Mono',monospace",marginTop:5}}>
+              (!) AI suggestion only - field inspection required for final determination
+            </div>
+          </div>
+        );
+      })()}
+
+      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+    </div>
+  );
+}
+
+// ─── Window ID Intercept Modal ────────────────────────────────────────────────
+function WindowIdModal({ pendingUrl, onConfirm, onCancel }) {
+  const [val, setVal] = React.useState('');
+  const tryExtract = (text) => {
+    const t = text.trim();
+    const m = t.match(/[?&]windowId=(\d+)/i);
+    if (m) return m[1];
+    if (/^\d{10,}$/.test(t)) return t;
+    return null;
+  };
+  const handleSubmit = () => { const id = tryExtract(val); if (id) onConfirm(id, pendingUrl); };
+  return (
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',zIndex:10000,display:'flex',alignItems:'center',justifyContent:'center'}}>
+      <div style={{background:'#1e293b',border:'1px solid #334155',borderRadius:14,padding:24,width:400,maxWidth:'90vw',boxShadow:'0 16px 48px rgba(0,0,0,0.6)'}}>
+        <div style={{fontSize:12,fontWeight:700,color:'#7dd3fc',fontFamily:"'DM Mono',monospace",letterSpacing:'0.06em',marginBottom:8}}>{pendingUrl ? 'OPEN IN IASWORLD' : 'UPDATE IASWORLD WINDOW ID'}</div>
+        <div style={{fontSize:12,color:'#94a3b8',marginBottom:14,lineHeight:1.6}}>
+          {pendingUrl ? 'Paste your iasWorld URL below — the Window ID is extracted automatically and saved.' : 'Paste your iasWorld URL (or just the windowId number) to update the saved Window ID. The windowId changes each day when iasWorld is restarted.'}
+        </div>
+        <input autoFocus value={val} onChange={e=>setVal(e.target.value)}
+          placeholder="Ctrl+A, Ctrl+C from your iasWorld address bar, then paste here"
+          style={{width:'100%',padding:'9px 10px',borderRadius:7,border:'1px solid #475569',background:'#0f172a',color:'#f8fafc',fontFamily:"'DM Mono',monospace",fontSize:11,outline:'none',boxSizing:'border-box',marginBottom:10}}/>
+        <div style={{display:'flex',gap:8}}>
+          <button onClick={handleSubmit} style={{flex:1,padding:'9px',borderRadius:7,border:'none',background:'#1d4ed8',color:'#fff',fontFamily:"'DM Mono',monospace",fontSize:12,fontWeight:700,cursor:'pointer'}}>{pendingUrl ? 'Open Parcel →' : 'Save Window ID'}</button>
+          <button onClick={onCancel} style={{padding:'9px 14px',borderRadius:7,border:'1px solid #334155',background:'transparent',color:'#64748b',fontFamily:"'DM Mono',monospace",fontSize:12,cursor:'pointer'}}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PropertyCard({ parcel, status, onStatus, windowId, photoUrls, isPastWeek, onNeedWindowId, note, onNote }) {
+  const [expanded,    setExpanded]    = useState(false);
+  const [showRemarks, setShowRemarks] = useState(false);
+  const [noteInput,   setNoteInput]   = useState(note || "");
+  const cfg = status ? STATUS_CONFIG[status] : null;
+  var pastBanner = isPastWeek ? (
+    <div style={{fontSize:10,color:"#92400e",background:"#fef3c7",border:"1px solid #fcd34d",borderRadius:5,padding:"3px 8px",marginBottom:8,display:"inline-block",fontFamily:"'DM Mono',monospace"}}>
+      Past week - photos not available
+    </div>
+  ) : null;
+
+  const iasWorldUrl = parcel.parcelId
+    ? `https://iasworld.starkcountyohio.gov/iasworld/Maintain/Transact.aspx?txtMaskedPin=${parcel.parcelId}&PinValue=${parcel.parcelId}&submitFlag=true${windowId ? `&windowId=${windowId}` : ''}`
+    : "";
+
+  const zillowUrl = ((parcel.zillowUrl && parcel.zillowUrl!=="nan" && parcel.zillowUrl.startsWith("http"))
+    ? parcel.zillowUrl
+    : buildZillowUrl(parcel.address, parcel.city, parcel.zip)).replace(/(\d{5})\.0(_rb)/, '$1$2');
+
+  const cduCfg = CDU_CONFIG[parcel.cdu];
+
+  return (
+    <div>
+    {pastBanner}
+    <div style={{background:cfg?cfg.bg+"55":"#ffffff",border:`1.5px solid ${cfg?cfg.border:"#e5e7eb"}`,borderRadius:14,padding:"20px 22px",transition:"border-color 0.2s,background 0.2s,box-shadow 0.15s",boxShadow:status?`0 2px 8px ${cfg.border}33`:"0 1px 3px #0001"}}>
+
+      {/* -- Top section: photo + info -- */}
+      <div style={{display:"flex",gap:12,marginBottom:8}}>
+        {/* Photo thumbnail */}
+        {photoUrls && photoUrls.length > 0 && (
+          <div style={{flexShrink:0,width:140,height:105,borderRadius:10,overflow:"hidden",border:"1px solid #e2e8f0",background:"#f1f5f9"}}>
+            <img src={photoUrls[0]} alt="Front exterior" style={{width:"100%",height:"100%",objectFit:"cover"}} />
+          </div>
+        )}
+
+        {/* Parcel info */}
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{display:"flex",alignItems:"center",gap:7,flexWrap:"wrap"}}>
+            <span style={{fontFamily:"'DM Mono',monospace",fontSize:16,fontWeight:700,color:"#111827",letterSpacing:"0.04em"}}>{parcel.parcelId||"-"}</span>
+            {parcel.type==="mismatch" && parcel.mismatches.length>0 && (
+              <span style={{background:"#fef2f2",border:"1px solid #fca5a5",color:"#991b1b",borderRadius:99,padding:"1px 8px",fontSize:10,fontWeight:700,fontFamily:"'DM Mono',monospace"}}>
+                {parcel.mismatches.length} MISMATCH{parcel.mismatches.length!==1?"ES":""}
+              </span>
+            )}
+            {parcel.type==="perfect" && (
+              <span style={{background:"#f0fdf4",border:"1px solid #86efac",color:"#15803d",borderRadius:99,padding:"1px 8px",fontSize:10,fontWeight:700,fontFamily:"'DM Mono',monospace"}}> PERFECT</span>
+            )}
+            {cduCfg && (
+              <span title={cduCfg.full} style={{background:cduCfg.bg,border:`1px solid ${cduCfg.border}`,color:cduCfg.color,borderRadius:5,padding:"1px 7px",fontSize:10,fontWeight:700,fontFamily:"'DM Mono',monospace",cursor:"default"}}>
+                {parcel.cdu}
+              </span>
+            )}
+            {status && <Badge label={status}/>}
+          </div>
+
+          <div style={{fontSize:16,color:"#374151",marginTop:5,fontFamily:"'DM Sans',sans-serif"}}>
+            {parcel.address||"No address"}{parcel.city?`, ${parcel.city}`:""}{parcel.zip?` ${parcel.zip}`:""}
+          </div>
+
+          {/* Meta row: zone, listing, salekey, SFLA, baths */}
+          <div style={{display:"flex",gap:8,marginTop:4,flexWrap:"wrap",alignItems:"center"}}>
+            {parcel.zone && parcel.zone!=="nan" && parcel.zone!=="" && (
+              <span style={{fontSize:13,fontFamily:"'DM Mono',monospace",background:"#f0f9ff",border:"1px solid #bae6fd",color:"#0369a1",borderRadius:5,padding:"3px 9px",fontWeight:600}}> {parcel.zone}</span>
+            )}
+            {parcel.sfla != null && (
+              <span style={{fontSize:13,fontFamily:"'DM Mono',monospace",background:"#f5f3ff",border:"1px solid #ddd6fe",color:"#6d28d9",borderRadius:5,padding:"3px 9px",fontWeight:600}}>
+                {parcel.sfla.toLocaleString()} sf
+              </span>
+            )}
+            {(parcel.fixbath != null || parcel.fixhalf != null) && (
+              <span style={{fontSize:13,fontFamily:"'DM Mono',monospace",background:"#fdf2f8",border:"1px solid #fbcfe8",color:"#9d174d",borderRadius:5,padding:"3px 9px",fontWeight:600}}>
+                {parcel.fixbath != null ? `${parcel.fixbath}` : "?"}
+                {parcel.fixhalf != null && parcel.fixhalf > 0 ? `.${parcel.fixhalf > 1 ? "5+" : "5"}` : ""} ba
+              </span>
+            )}
+            {parcel.listing && <span style={{fontSize:13,color:"#6b7280",fontFamily:"'DM Mono',monospace"}}>Listing # <strong style={{color:"#374151"}}>{parcel.listing}</strong></span>}
+            {parcel.salekey && <span style={{fontSize:13,color:"#6b7280",fontFamily:"'DM Mono',monospace"}}>SALEKEY <strong style={{color:"#374151"}}>{parcel.salekey}</strong></span>}
+            {parcel.addlParcels && parcel.addlParcels!=="nan" && parcel.addlParcels!=="" && (
+              <span style={{fontSize:11,color:"#6b7280",fontFamily:"'DM Mono',monospace"}}>+Parcels: <strong style={{color:"#374151"}}>{parcel.addlParcels}</strong></span>
+            )}
+          </div>
+        </div>
+
+        {/* Link buttons */}
+        <div style={{display:"flex",flexDirection:"column",gap:5,alignItems:"flex-end",flexShrink:0}}>
+          <LinkButton href={iasWorldUrl} icon="" label="iasWorld" accentColor="#1d4ed8" windowName="iasWorldWindow"
+            onIntercept={!windowId ? ()=>{ onNeedWindowId && onNeedWindowId(iasWorldUrl); } : undefined}/>
+          <LinkButton href={zillowUrl}   icon="" label="Zillow"   accentColor="#0ea5e9" windowName="zillowWindow"/>
+        </div>
+      </div>
+
+      {/* -- Effective Age Panel -- */}
+      <EffectiveAgePanel yrblt={parcel.yrblt} effyr={parcel.effyr} cdu={parcel.cdu} grade={parcel.grade}/>
+
+      {/* -- AI Grade/Condition Panel -- */}
+      <GradeSuggestPanel parcel={parcel} photoUrls={photoUrls}/>
+
+      {/* -- Mismatch table -- */}
+      {parcel.type==="mismatch" && parcel.mismatches.length>0 && (
+        <div style={{marginBottom:8}}>
+          <button onClick={()=>setExpanded(e=>!e)} style={{background:"none",border:"none",cursor:"pointer",fontSize:13,color:"#6b7280",fontFamily:"'DM Mono',monospace",padding:"4px 0",display:"flex",alignItems:"center",gap:4}}>
+            {expanded?"":""} {expanded?"Hide":"Show"} field mismatches
+          </button>
+          {expanded && (
+            <div style={{marginTop:6,borderRadius:8,overflow:"hidden",border:"1px solid #fca5a5"}}>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",background:"#fef2f2",padding:"5px 10px",color:"#991b1b",fontWeight:700,fontSize:10,fontFamily:"'DM Mono',monospace",borderBottom:"1px solid #fca5a5"}}>
+                <span>MLS FIELD</span><span>CAMA FIELD</span><span>MLS VALUE</span><span>CAMA VALUE</span>
+              </div>
+              {parcel.mismatches.map((m,i)=>(
+                <div key={i} style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",padding:"6px 10px",background:i%2===0?"#fff":"#fff8f8",borderBottom:i<parcel.mismatches.length-1?"1px solid #fee2e2":"none",fontFamily:"'DM Mono',monospace",fontSize:13}}>
+                  <span style={{color:"#b45309"}}>{m.fieldMls}</span>
+                  <span style={{color:"#6b7280"}}>{m.fieldCama}</span>
+                  <span style={{fontWeight:700,color:"#374151"}}>{String(m.mlsValue)}</span>
+                  <span style={{color:"#dc2626",fontWeight:700}}>{String(m.camaValue)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* -- Perfect match fields -- */}
+      {parcel.type==="perfect" && parcel.fieldsList && (
+        <div style={{fontSize:11,color:"#4b5563",fontFamily:"'DM Mono',monospace",marginBottom:8}}>
+          Fields matched: <span style={{color:"#059669"}}>{parcel.fieldsList}</span>
+        </div>
+      )}
+
+      {/* -- Public Remarks -- */}
+      {parcel.remarks && parcel.remarks!=="nan" && parcel.remarks!=="" && (
+        <div style={{marginBottom:8}}>
+          <button onClick={()=>setShowRemarks(r=>!r)} style={{background:"none",border:"none",cursor:"pointer",fontSize:13,color:"#6b7280",fontFamily:"'DM Mono',monospace",padding:"4px 0",display:"flex",alignItems:"center",gap:4}}>
+            {showRemarks?"":""} {showRemarks?"Hide":"Show"} MLS remarks
+          </button>
+          {showRemarks && (
+            <div style={{marginTop:6,padding:"10px 14px",background:"#f8fafc",border:"1px solid #e2e8f0",borderRadius:7,fontSize:14,color:"#374151",fontFamily:"'DM Sans',sans-serif",lineHeight:1.7,maxHeight:200,overflowY:"auto"}}>
+              {parcel.remarks}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* -- Status buttons -- */}
+      <div style={{display:"flex",gap:6,flexWrap:"wrap",marginTop:4}}>
+        {STATUSES.map(s=><StatusButton key={s} label={s} active={status===s} onClick={()=>{
+          const next = status===s ? null : s;
+          onStatus(parcel.parcelId, next, next==="Field Visit"?noteInput:"", parcel.address, parcel.zone);
+          if (next==="Field Visit") setExpanded(true);
+        }}/>)}
+      </div>
+
+      {/* -- Field Visit note panel -- */}
+      {status==="Field Visit" && !isPastWeek && (
+        <div style={{marginTop:10,padding:"10px 12px",background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:8}}>
+          <div style={{fontSize:11,fontWeight:700,color:"#1e40af",fontFamily:"'DM Mono',monospace",letterSpacing:"0.06em",marginBottom:7}}>FIELD VISIT REASON</div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>
+            {["New Addition","New Outbuilding","No Photos","Interior Changes","Other"].map(chip=>(
+              <button key={chip} onClick={()=>{
+                const val = noteInput===chip ? "" : chip;
+                setNoteInput(val);
+                onNote && onNote(parcel.parcelId, val, parcel.address, parcel.zone);
+              }} style={{padding:"4px 10px",borderRadius:99,border:"1.5px solid",fontSize:11,fontWeight:600,cursor:"pointer",fontFamily:"'DM Mono',monospace",transition:"all 0.12s",
+                borderColor: noteInput===chip?"#2563eb":"#bfdbfe",
+                background:  noteInput===chip?"#2563eb":"#fff",
+                color:       noteInput===chip?"#fff":"#1e40af"}}>
+                {chip}
+              </button>
+            ))}
+          </div>
+          <input value={noteInput} onChange={e=>{
+              setNoteInput(e.target.value);
+              onNote && onNote(parcel.parcelId, e.target.value, parcel.address, parcel.zone);
+            }}
+            placeholder="Add custom note..."
+            style={{width:"100%",padding:"6px 10px",borderRadius:6,border:"1px solid #bfdbfe",background:"#fff",fontFamily:"'DM Sans',sans-serif",fontSize:12,outline:"none",color:"#1e3a8a",boxSizing:"border-box"}}/>
+          {noteInput && <div style={{fontSize:10,color:"#3b82f6",marginTop:4,fontFamily:"'DM Mono',monospace"}}>✓ Note saved</div>}
+        </div>
+      )}
+      {status==="Field Visit" && note && isPastWeek && (
+        <div style={{marginTop:8,padding:"6px 10px",background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:6,fontSize:12,color:"#1e40af",fontFamily:"'DM Sans',sans-serif"}}>
+          <strong>Field Visit reason:</strong> {note}
+        </div>
+      )}
+    </div>
+    </div>
+  );
+}
+
+// --- iasWorld Window ID Help Tooltip -----------------------------------------
+function IasWorldHelp() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{position:"relative",display:"inline-block"}}>
+      <button onClick={()=>setOpen(o=>!o)}
+        style={{background:"none",border:"1px solid #334155",borderRadius:"50%",width:20,height:20,cursor:"pointer",color:"#64748b",fontSize:11,fontFamily:"'DM Mono',monospace",display:"flex",alignItems:"center",justifyContent:"center",padding:0,flexShrink:0}}
+        title="How to find your Window ID"></button>
+      {open && (
+        <div style={{position:"absolute",right:0,top:26,width:320,background:"#0f172a",border:"1px solid #334155",borderRadius:10,padding:14,zIndex:999,boxShadow:"0 8px 32px #000a"}}>
+          <div style={{fontSize:11,fontWeight:700,color:"#7dd3fc",fontFamily:"'DM Mono',monospace",letterSpacing:"0.06em",marginBottom:10}}>HOW TO SET YOUR WINDOW ID</div>
+          <div style={{fontSize:10,color:"#94a3b8",marginBottom:8,lineHeight:1.5}}>Links work without this — parcels open in a new tab. Set it if you want clicks to land in your existing iasWorld window.</div>
+          {[
+            ["1","Log in to iasWorld","Open your browser and log into iasWorld as normal."],
+            ["2","Open any parcel","Search for and open any parcel record — it doesn't matter which one."],
+            ["3","Copy the full URL","Click the address bar, press Ctrl+A to select all, then Ctrl+C to copy the entire URL."],
+            ["4","Paste here","Paste it into the Window ID field — the number is extracted automatically."],
+          ].map(([num,title,desc])=>(
+            <div key={num} style={{display:"flex",gap:10,marginBottom:10,alignItems:"flex-start"}}>
+              <div style={{flexShrink:0,width:20,height:20,borderRadius:"50%",background:"#1e3a5f",border:"1px solid #38bdf8",display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:700,color:"#38bdf8",fontFamily:"'DM Mono',monospace"}}>{num}</div>
+              <div>
+                <div style={{fontSize:11,fontWeight:700,color:"#e2e8f0",fontFamily:"'DM Mono',monospace",marginBottom:2}}>{title}</div>
+                <div style={{fontSize:11,color:"#64748b",fontFamily:"'DM Sans',sans-serif",lineHeight:1.5}}>{desc}</div>
+              </div>
+            </div>
+          ))}
+          {/* Screenshot of the URL bar with windowId highlighted */}
+          <div style={{marginTop:6,marginBottom:6}}>
+            <div style={{fontSize:10,color:"#475569",fontFamily:"'DM Mono',monospace",marginBottom:4}}>SCREENSHOT - find the highlighted number in your URL bar:</div>
+            <img src="data:image/png;base64,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" alt="iasWorld URL showing windowId" style={{width:"100%",borderRadius:6,border:"1px solid #334155"}}/>
+            <div style={{marginTop:4,fontSize:10,color:"#475569",fontFamily:"'DM Mono',monospace",textAlign:"center"}}>
+              Copy the number highlighted in blue: <span style={{color:"#fbbf24"}}>windowId=</span><span style={{color:"#38bdf8",fontWeight:700}}>639088249053247815</span>
+            </div>
+          </div>
+          <button onClick={()=>setOpen(false)} style={{marginTop:10,width:"100%",padding:"5px",borderRadius:6,border:"1px solid #334155",background:"transparent",color:"#64748b",fontSize:10,cursor:"pointer",fontFamily:"'DM Mono',monospace"}}>Close</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- Drop Zone ----------------------------------------------------------------
+function DropZone({ label, onFile, loaded, count }) {
+  const ref = useRef();
+  const [drag, setDrag] = useState(false);
+  const handleDrop = useCallback(e=>{e.preventDefault();setDrag(false);const f=e.dataTransfer.files[0];if(f)onFile(f);},[onFile]);
+  return (
+    <div onDragOver={e=>{e.preventDefault();setDrag(true);}} onDragLeave={()=>setDrag(false)} onDrop={handleDrop} onClick={()=>ref.current.click()}
+      style={{border:`2px dashed ${drag?"#2563eb":loaded?"#059669":"#d1d5db"}`,borderRadius:12,padding:"18px 16px",textAlign:"center",cursor:"pointer",transition:"all 0.2s",background:drag?"#eff6ff":loaded?"#f0fdf4":"#fafafa",minHeight:80,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:4}}>
+      <input ref={ref} type="file" accept=".xlsx,.xls" style={{display:"none"}} onChange={e=>e.target.files[0]&&onFile(e.target.files[0])}/>
+      <span style={{fontSize:22}}>{loaded?"":""}</span>
+      <span style={{fontSize:12,fontWeight:700,color:loaded?"#065f46":"#374151",fontFamily:"'DM Mono',monospace",letterSpacing:"0.03em"}}>{label}</span>
+      {loaded?<span style={{fontSize:11,color:"#059669",fontFamily:"'DM Mono',monospace"}}>{count} parcels loaded</span>
+             :<span style={{fontSize:10,color:"#9ca3af"}}>Click or drag .xlsx file here</span>}
+    </div>
+  );
+}
+
+// --- Photo Folder Upload ------------------------------------------------------
+function PhotoFolderUpload({ photoMap, onPhotosLoaded }) {
+  const ref = useRef();
+  const [loading, setLoading] = useState(false);
+  const count = photoMap.size;
+
+  const handleFiles = useCallback(async (files) => {
+    setLoading(true);
+    const imageFiles = Array.from(files).filter(f => f.type.startsWith("image/"));
+    const newMap = new Map();
+    await Promise.all(imageFiles.map(file => new Promise(resolve => {
+      const key = photoKeyFromFilename(file.name);
+      const reader = new FileReader();
+      reader.onload = e => { newMap.set(key, e.target.result); resolve(); };
+      reader.readAsDataURL(file);
+    })));
+    onPhotosLoaded(newMap);
+    setLoading(false);
+  }, [onPhotosLoaded]);
+
+  const handleDrop = useCallback(e => {
+    e.preventDefault();
+    const items = e.dataTransfer.items;
+    const files = [];
+    if (items) {
+      for (const item of items) {
+        const entry = item.webkitGetAsEntry && item.webkitGetAsEntry();
+        if (entry && entry.isDirectory) {
+          // folder dropped - read entries
+          const reader = entry.createReader();
+          reader.readEntries(entries => {
+            entries.forEach(en => {
+              if (en.isFile) en.file(f => { files.push(f); if(files.length===entries.length) handleFiles(files); });
+            });
+          });
+          return;
+        }
+        if (item.kind==="file") files.push(item.getAsFile());
+      }
+    } else {
+      for (const f of e.dataTransfer.files) files.push(f);
+    }
+    handleFiles(files);
+  }, [handleFiles]);
+
+  return (
+    <div
+      onDragOver={e=>e.preventDefault()}
+      onDrop={handleDrop}
+      onClick={()=>ref.current.click()}
+      style={{border:`2px dashed ${count>0?"#7c3aed":"#d1d5db"}`,borderRadius:12,padding:"18px 16px",textAlign:"center",cursor:"pointer",transition:"all 0.2s",background:count>0?"#faf5ff":"#fafafa",minHeight:80,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",gap:4}}
+    >
+      <input ref={ref} type="file" accept="image/*" multiple style={{display:"none"}}
+        onChange={e=>e.target.files.length&&handleFiles(e.target.files)}
+      />
+      <span style={{fontSize:22}}>{loading?"":count>0?"":""}</span>
+      <span style={{fontSize:12,fontWeight:700,color:count>0?"#6d28d9":"#374151",fontFamily:"'DM Mono',monospace",letterSpacing:"0.03em"}}>
+        {loading?"Loading photos...":"PHOTO FOLDER"}
+      </span>
+      {count>0
+        ? <span style={{fontSize:11,color:"#7c3aed",fontFamily:"'DM Mono',monospace"}}>{count} photos loaded</span>
+        : <span style={{fontSize:10,color:"#9ca3af",textAlign:"center",lineHeight:1.4}}>Select all photo files from your folder<br/>(e.g. 102774-1.jpg)</span>
+      }
+    </div>
+  );
+}
+
+// --- Shared Backend Configuration ---
+// Build script injects window.INJECTED_SHARED_API_URL and window.GITHUB_PAGES_BASE
+var SHARED_API_URL    = (window.INJECTED_SHARED_API_URL || "");
+var GITHUB_PAGES_BASE = (window.GITHUB_PAGES_BASE || "").replace(/\/$/,"");
+
+function getReviewerEmail() {
+  var email = sessionStorage.getItem("sc_reviewer_email");
+  if (!email || !email.endsWith(".gov")) {
+    var input = "";
+    while (!input || !input.includes("@") || !input.endsWith(".gov")) {
+      input = prompt(
+        !input ? "Enter your .gov email to log review activity:"
+               : "Must be a .gov email. Try again:",
+        input || ""
+      );
+      if (input === null) { input = "unknown@unknown.gov"; break; }
+      input = input.trim().toLowerCase();
+    }
+    sessionStorage.setItem("sc_reviewer_email", input);
+    email = input;
+  }
+  return email;
+}
+
+function apiGetStatuses(weekKey) {
+  if (!SHARED_API_URL) return Promise.resolve({ statuses: {}, notes: {}, reviewers: {}, notified: {} });
+  return fetch(SHARED_API_URL + "?weekKey=" + encodeURIComponent(weekKey))
+    .then(function(r) { return r.json(); })
+    .then(function(d) { return { statuses: d.statuses || {}, notes: d.notes || {},
+                                 reviewers: d.reviewers || {}, notified: d.notified || {} }; })
+    .catch(function() { return { statuses: {}, notes: {}, reviewers: {}, notified: {} }; });
+}
+
+function apiGetAllWeeks() {
+  if (!SHARED_API_URL) return Promise.resolve({});
+  return fetch(SHARED_API_URL + "?allWeeks=true")
+    .then(function(r) { return r.json(); })
+    .then(function(d) { return d.weeks || {}; })
+    .catch(function() { return {}; });
+}
+
+function apiSetStatus(weekKey, parcelId, status, reviewer, note, address, zone) {
+  if (!SHARED_API_URL) return;
+  fetch(SHARED_API_URL, {
+    method: "POST", mode: "no-cors",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ weekKey, parcelId, status, reviewer,
+                           note: note||"", address: address||"", zone: zone||"" })
+  }).catch(function() {});
+}
+
+function apiNotifySupport(weekKey, weekLabel, parcelIds) {
+  if (!SHARED_API_URL) return Promise.resolve({ ok: false, message: "No API URL" });
+  return fetch(SHARED_API_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain" },
+    body: JSON.stringify({ action: "notify", weekKey, weekLabel, parcelIds: parcelIds || null })
+  }).then(r => r.json()).catch(() => ({ ok: false, message: "Network error" }));
+}
+
+function loadArchive(weekKey) {
+  if (!GITHUB_PAGES_BASE) return Promise.resolve(null);
+  return fetch(GITHUB_PAGES_BASE + "/archive/" + weekKey + ".json")
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .catch(function() { return null; });
+}
+
+// Fetch the deployed build marker, cache-busted so we never read a stale copy
+// from the HTTP cache. Used to detect when a newer review_portal.html has been
+// published while a staff member's tab is still on an older cached build.
+function fetchLatestVersion() {
+  if (!GITHUB_PAGES_BASE) return Promise.resolve(null);
+  return fetch(GITHUB_PAGES_BASE + "/version.json?t=" + Date.now(), { cache: "no-store" })
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .catch(function() { return null; });
+}
+
+// --- Week Session helpers -----------------------
+// Sessions are stored as: { [weekKey]: { label, mismatches, perfects, statuses, windowId, createdAt } }
+// weekKey = "YYYY-WNN" e.g. "2026-W10"
+
+function getISOWeekKey(date = new Date()) {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const day = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - day);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  const week = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+  return `${d.getUTCFullYear()}-W${String(week).padStart(2,"0")}`;
+}
+
+// The ISO week the LOADED build's data belongs to — parsed from the baked
+// weekLabel ("Week of June 08, 2026"), NOT today's date. This is what status
+// writes and the current-week card key off. Prevents reviews from mis-filing to
+// a new ISO week when staff act on a stale cached build after the week rolls over.
+function getBuildWeekKey() {
+  if (PRELOADED && PRELOADED.weekLabel) {
+    var m = PRELOADED.weekLabel.match(/Week of (.+)/);
+    if (m) { var d = new Date(m[1]); if (!isNaN(d.getTime())) return getISOWeekKey(d); }
+  }
+  return getISOWeekKey();  // fallback: manual-upload mode with no preloaded build
+}
+
+function weekKeyToLabel(key) {
+  // "2026-W10" → "Week of Mar 2, 2026"
+  const [year, w] = key.split("-W");
+  const jan4 = new Date(Date.UTC(Number(year), 0, 4));
+  const weekNum = Number(w);
+  const dayOfWeek = jan4.getUTCDay() || 7;
+  const monday = new Date(jan4);
+  monday.setUTCDate(jan4.getUTCDate() - (dayOfWeek - 1) + (weekNum - 1) * 7);
+  return `Week of ${monday.toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric",timeZone:"UTC"})}`;
+}
+
+// ─── Week Selector Panel ──────────────────────────────────────────────────────
+function WeekSelectorPanel({ sessions, activeWeek, onSelect, onNewWeek }) {
+  const sorted = Object.keys(sessions).sort().reverse();
+  if (sorted.length === 0) return null;
+  return (
+    <div style={{width:"100%",maxWidth:600,marginBottom:14,background:"#1e293b",borderRadius:12,padding:"14px 16px",border:"1px solid #334155"}}>
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+        <span style={{fontSize:11,color:"#7dd3fc",fontFamily:"'DM Mono',monospace",letterSpacing:"0.08em"}}>PREVIOUS WEEKS</span>
+        <span style={{fontSize:10,color:"#475569",fontFamily:"'DM Mono',monospace"}}>{sorted.length} session{sorted.length!==1?"s":""} saved</span>
+      </div>
+      <div style={{display:"flex",flexDirection:"column",gap:6}}>
+        {sorted.map(key => {
+          const s = sessions[key];
+          const isActive = key === activeWeek;
+          // Use authoritative totalParcels from archive if available, otherwise fall back to counting arrays
+          const totalParcels = s.totalParcels || (((s.mismatches ? s.mismatches.length : 0) + (s.perfects ? s.perfects.length : 0)) || (s.parcelCount||0));
+          const reviewed = Object.keys(s.statuses||{}).length || (s.reviewedCount||0);
+          const pct = totalParcels > 0 ? Math.round(reviewed/totalParcels*100) : 0;
+          return (
+            <div key={key} onClick={()=>onSelect(key)}
+              style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"9px 12px",borderRadius:8,cursor:"pointer",background:isActive?"#0ea5e922":"#0f172a",border:`1.5px solid ${isActive?"#0ea5e9":"#334155"}`,transition:"all 0.15s"}}
+              onMouseEnter={e=>{if(!isActive){e.currentTarget.style.background="#1e3a5f44";e.currentTarget.style.borderColor="#475569";}}}
+              onMouseLeave={e=>{if(!isActive){e.currentTarget.style.background="#0f172a";e.currentTarget.style.borderColor="#334155";}}}>
+              <div>
+                <div style={{fontSize:12,fontWeight:700,color:isActive?"#38bdf8":"#e2e8f0",fontFamily:"'DM Mono',monospace"}}>{weekKeyToLabel(key)}</div>
+                <div style={{fontSize:10,color:"#64748b",fontFamily:"'DM Mono',monospace",marginTop:2}}>
+                  {totalParcels > 0 ? totalParcels : "?"} parcels  {s.createdAt}
+                </div>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                {/* Progress bar */}
+                <div style={{width:60,height:4,background:"#334155",borderRadius:2,overflow:"hidden"}}>
+                  <div style={{width:`${pct}%`,height:"100%",background:pct===100?"#4ade80":"#38bdf8",borderRadius:2,transition:"width 0.3s"}}/>
+                </div>
+                <span style={{fontSize:10,color:pct===100?"#4ade80":"#94a3b8",fontFamily:"'DM Mono',monospace",minWidth:32,textAlign:"right"}}>{pct}%</span>
+                {isActive && <span style={{fontSize:9,background:"#0ea5e922",border:"1px solid #0ea5e9",color:"#38bdf8",borderRadius:3,padding:"1px 5px",fontFamily:"'DM Mono',monospace",fontWeight:700}}>ACTIVE</span>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <button onClick={onNewWeek}
+        style={{marginTop:10,width:"100%",padding:"7px",borderRadius:7,border:"1px dashed #334155",background:"transparent",color:"#475569",fontSize:11,fontFamily:"'DM Mono',monospace",cursor:"pointer",transition:"all 0.15s",letterSpacing:"0.04em"}}
+        onMouseEnter={e=>{e.currentTarget.style.borderColor="#7dd3fc";e.currentTarget.style.color="#7dd3fc";}}
+        onMouseLeave={e=>{e.currentTarget.style.borderColor="#334155";e.currentTarget.style.color="#475569";}}>
+        + Start new week session
+      </button>
+    </div>
+  );
+}
+
+// --- Main App -----------------------------------------------------------------
+function App() {
+  // -- Week sessions stored in memory ------------------------------------------
+  // sessions: { [weekKey]: { label, mismatches, perfects, statuses, windowId, createdAt } }
+  const [sessions,     setSessions]     = useState({});
+  const [activeWeek,   setActiveWeek]   = useState(null); // weekKey of session being uploaded to
+
+  // -- Current upload state (before saving into a session) -------------------
+  const [mismatches,   setMismatches]   = useState([]);
+  const [perfects,     setPerfects]     = useState([]);
+  const [photoMap,     setPhotoMap]     = useState(new Map());
+  const [windowId,     setWindowId]     = useState(() => {
+    const id   = localStorage.getItem('iasworld_window_id') || "";
+    const date = localStorage.getItem('iasworld_window_id_date') || "";
+    const today = new Date().toISOString().slice(0, 10);
+    return (id && date === today) ? id : "";  // treat as unset if from a previous day
+  });
+  const [winIdModal,   setWinIdModal]   = useState({open:false, pendingUrl:""});
+  const [notes,        setNotes]        = useState({});  // { parcelId: noteText }
+  const [notifyModal,  setNotifyModal]  = useState({open:false, sending:false, sent:false});
+
+  // -- Portal view state -----------------------------------------------------
+  const [portalWeek,   setPortalWeek]   = useState(null); // which week is open in portal
+  const [statuses,     setStatuses]     = useState({});
+  const [reviewers,    setReviewers]    = useState({});  // { parcelId: reviewerEmail } — who flagged it
+  const [notified,     setNotified]     = useState({});  // { parcelId: true } — already emailed to support
+  const [notifySelected, setNotifySelected] = useState({}); // { parcelId: bool } — modal checkboxes
+  const [portalPhotos, setPortalPhotos] = useState(new Map());
+  const [portalParcelData, setPortalParcelData] = useState({ mismatches: [], perfects: [] });
+  const [zoneFilter,   setZoneFilter]   = useState("All");
+  const [cduFilter,    setCduFilter]    = useState("All");
+  const [statusFilter, setStatusFilter] = useState("All");
+  const [typeFilter,   setTypeFilter]   = useState("All");
+  const [search,       setSearch]       = useState("");
+  const [page,         setPage]         = useState(0);
+  const [view,         setView]         = useState("home");
+  const [newBuildAvailable, setNewBuildAvailable] = useState(false); // a newer review_portal.html is live
+  const PAGE_SIZE = 15;
+
+  // -- Derive current week key -----------------------------------------------
+  const currentWeekKey = useMemo(() => getBuildWeekKey(), []);
+
+  useEffect(function() {
+    apiGetAllWeeks().then(function(weeks) {
+      if (!weeks || !Object.keys(weeks).length) return;
+      setSessions(function(prev) {
+        var merged = Object.assign({}, prev);
+        Object.entries(weeks).forEach(function(entry) {
+          var wk = entry[0], summary = entry[1];
+          if (!merged[wk]) {
+            merged[wk] = {
+              mismatches: [], perfects: [], statuses: {},
+              windowId: "638981240146803746",
+              createdAt: weekKeyToLabel(wk),
+              parcelCount: summary.total || 0,
+              reviewedCount: (summary.reviewed || 0) + (summary.fieldVisit || 0),
+              needsUpload: true
+            };
+          } else {
+            // Never overwrite parcels already loaded from archive
+            merged[wk].parcelCount   = merged[wk].parcelCount   || summary.total    || 0;
+            merged[wk].reviewedCount = (summary.reviewed || 0) + (summary.fieldVisit || 0);
+            // Merge statuses without touching parcel data
+          }
+        });
+        return merged;
+      });
+    });
+  }, []);
+
+  // -- When user opens portal for a week, load that session's statuses -------
+  const openPortal = useCallback(function(weekKey) {
+    var sess = sessions[weekKey];
+    var isCurrentWeek = weekKey === currentWeekKey;
+    setPortalWeek(weekKey);
+    setPortalPhotos(isCurrentWeek ? photoMap : new Map());
+    setView("portal");
+    setPage(0);
+    setStatuses((sess && sess.statuses) || {});
+    // Fresh build always wins: for the current week the PRELOADED data baked into
+    // this HTML is the newest build the user has loaded. Use it instead of any stale
+    // saved session or server archive left over from a previous build of the same
+    // week (otherwise an older perfect/mismatch classification can shadow it).
+    var freshBuild = isCurrentWeek && PRELOADED && (mismatches.length + perfects.length) > 0;
+    // Set parcel data from session if available, else archive will fill it in below
+    var hasParcels = !freshBuild && sess && ((sess.mismatches||[]).length + (sess.perfects||[]).length) > 0;
+    if (freshBuild) {
+      setPortalParcelData({ mismatches: mismatches, perfects: perfects });
+    } else if (hasParcels) {
+      setPortalParcelData({ mismatches: sess.mismatches || [], perfects: sess.perfects || [] });
+    }
+    apiGetStatuses(weekKey).then(function(resp) {
+      if (Object.keys(resp.statuses).length > 0) {
+        setStatuses(resp.statuses);
+        setSessions(function(s) {
+          var u = Object.assign({}, s);
+          u[weekKey] = Object.assign({}, u[weekKey], { statuses: resp.statuses });
+          return u;
+        });
+      }
+      if (Object.keys(resp.notes).length > 0) setNotes(resp.notes);
+      setReviewers(resp.reviewers || {});
+      setNotified(resp.notified || {});
+    });
+    if (!freshBuild && !hasParcels) {
+      loadArchive(weekKey).then(function(archive) {
+        if (!archive) return;
+        var normMM = (archive.mismatches || []).map(function(r){ return normalizeRow(r,"mismatch"); });
+        var normPP = (archive.perfects   || []).map(function(r){ return normalizeRow(r,"perfect"); });
+        setPortalParcelData({ mismatches: normMM, perfects: normPP });
+        setSessions(function(s) {
+          var u = Object.assign({}, s);
+          u[weekKey] = Object.assign({}, u[weekKey], {
+            mismatches: archive.mismatches || [],
+            perfects:   archive.perfects   || [],
+            totalParcels: archive.totalParcels || null,  // Authoritative count from archive
+            needsUpload: false
+          });
+          return u;
+        });
+      });
+    }
+  }, [sessions, photoMap, currentWeekKey, mismatches, perfects]);
+
+  // -- Save status changes back into the session -----------------------------
+  const setStatus = useCallback(function(parcelId, status, note, address, zone) {
+    var reviewer = getReviewerEmail();
+    // Track who flagged it and re-open it for notification (server clears NotifiedAt too)
+    setReviewers(function(prev) {
+      var n = Object.assign({}, prev);
+      if (status === null) delete n[parcelId]; else n[parcelId] = reviewer;
+      return n;
+    });
+    setNotified(function(prev) {
+      if (!prev[parcelId]) return prev;
+      var n = Object.assign({}, prev); delete n[parcelId]; return n;
+    });
+    setStatuses(function(prev) {
+      var next = Object.assign({}, prev);
+      if (status === null) { delete next[parcelId]; }
+      else { next[parcelId] = status; }
+      if (portalWeek) {
+        setSessions(function(s) {
+          var u = Object.assign({}, s);
+          u[portalWeek] = Object.assign({}, u[portalWeek], { statuses: next });
+          return u;
+        });
+        apiSetStatus(portalWeek, parcelId, status, reviewer, note||"", address||"", zone||"");
+      }
+      return next;
+    });
+  }, [portalWeek]);
+
+  // -- Save field visit note independently ----------------------------------
+  const setNote = useCallback(function(parcelId, note, address, zone) {
+    var reviewer = getReviewerEmail();
+    setNotes(function(prev) { return Object.assign({}, prev, { [parcelId]: note }); });
+    setReviewers(function(prev) { return Object.assign({}, prev, { [parcelId]: reviewer }); });
+    setNotified(function(prev) {
+      if (!prev[parcelId]) return prev;
+      var n = Object.assign({}, prev); delete n[parcelId]; return n;
+    });
+    if (portalWeek) {
+      apiSetStatus(portalWeek, parcelId, "Field Visit", reviewer, note, address||"", zone||"");
+    }
+  }, [portalWeek]);
+
+  // -- Save session when user clicks "Open Review Portal" -------------------
+  const saveAndOpenPortal = useCallback(function() {
+    var weekKey = currentWeekKey;
+    var now = new Date().toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
+    var existingStatuses = (sessions[weekKey] && sessions[weekKey].statuses) || {};
+    var sess = {
+      mismatches: mismatches, perfects: perfects,
+      statuses: existingStatuses, windowId: windowId,
+      createdAt: now, parcelCount: mismatches.length + perfects.length,
+      totalParcels: mismatches.length + perfects.length,  // Authoritative count for current week
+      needsUpload: false
+    };
+    setSessions(function(s) { var u=Object.assign({},s); u[weekKey]=sess; return u; });
+    setActiveWeek(weekKey);
+    setStatuses(existingStatuses);
+    setPortalParcelData({ mismatches: mismatches, perfects: perfects });
+    setPortalWeek(weekKey);
+    setPortalPhotos(photoMap);
+    setView("portal");
+    setPage(0);
+    apiGetStatuses(weekKey).then(function(resp) {
+      if (Object.keys(resp.statuses).length > 0) {
+        setStatuses(resp.statuses);
+        setSessions(function(s) {
+          var u=Object.assign({},s);
+          u[weekKey]=Object.assign({},u[weekKey],{statuses:resp.statuses});
+          return u;
+        });
+      }
+      if (Object.keys(resp.notes).length > 0) setNotes(resp.notes);
+      setReviewers(resp.reviewers || {});
+      setNotified(resp.notified || {});
+    });
+  }, [currentWeekKey, mismatches, perfects, sessions, windowId, photoMap]);
+  // -- Start a new blank week ------------------------------------------------
+  const startNewWeek = useCallback(() => {
+    setMismatches([]);
+    setPerfects([]);
+    setPhotoMap(new Map());
+    setActiveWeek(null);
+  }, []);
+
+  const loadFile = useCallback((file, fileType, setter) => {
+    const reader = new FileReader();
+    reader.onload = e => { setter(groupByParcel(parseXlsx(new Uint8Array(e.target.result)).map(r=>normalizeRow(r,fileType)))); };
+    reader.readAsArrayBuffer(file);
+  }, []);
+
+  // -- Portal data comes from the open session -------------------------------
+  const portalSession = portalWeek ? sessions[portalWeek] : null;
+  const portalMismatches = portalParcelData.mismatches || [];
+  const portalPerfects   = portalParcelData.perfects   || [];
+
+  var isPastWeek   = portalWeek && portalWeek !== currentWeekKey;
+  var currentSess  = sessions[portalWeek] || {};
+  var archiveEmpty = isPastWeek
+    && (currentSess.mismatches||[]).length === 0
+    && (currentSess.perfects||[]).length   === 0;
+
+  const allParcels = useMemo(() => {
+    const map = new Map();
+    for (const p of portalPerfects)   map.set(p.parcelId, p);
+    for (const p of portalMismatches) map.set(p.parcelId, p);
+    return Array.from(map.values());
+  }, [portalMismatches, portalPerfects]);
+
+  // home-screen parcel count (current upload)
+  const allParcelsHome = useMemo(() => {
+    const map = new Map();
+    for (const p of perfects)   map.set(p.parcelId, p);
+    for (const p of mismatches) map.set(p.parcelId, p);
+    return Array.from(map.values());
+  }, [mismatches, perfects]);
+
+  // Always open a view (and each paginated page) scrolled to the top, so the
+  // filter bar is visible instead of landing mid-list.
+  useEffect(() => { window.scrollTo(0, 0); }, [view, page]);
+
+  // The home "Previous Weeks" card for the CURRENT week must use the true loaded
+  // parcel count as its denominator. The backend summary's "total" only counts
+  // parcels that already have a status row, so a week with e.g. 6 touched parcels
+  // would otherwise show "6 parcels / 100%" instead of "91 parcels / N%".
+  useEffect(() => {
+    if (!PRELOADED || allParcelsHome.length === 0) return;
+    setSessions(prev => {
+      var u = Object.assign({}, prev);
+      u[currentWeekKey] = Object.assign({}, u[currentWeekKey], {
+        totalParcels: allParcelsHome.length,
+        parcelCount:  allParcelsHome.length,
+      });
+      return u;
+    });
+  }, [allParcelsHome.length, currentWeekKey]);
+
+  const zones = useMemo(() => {
+    const seen = new Set();
+    for (const p of allParcels) if (p.zone && p.zone!=="nan" && p.zone!=="") seen.add(p.zone);
+    return ["All", ...Array.from(seen).sort()];
+  }, [allParcels]);
+
+  const filtered = useMemo(() => {
+    let arr = allParcels;
+    if (zoneFilter!=="All")          arr = arr.filter(p=>p.zone===zoneFilter);
+    if (cduFilter!=="All")           arr = arr.filter(p=>p.cdu===cduFilter);
+    if (typeFilter!=="All")          arr = arr.filter(p=>typeFilter==="Mismatches"?p.type==="mismatch":p.type==="perfect");
+    if (statusFilter==="Unreviewed") arr = arr.filter(p=>!statuses[p.parcelId]);
+    else if (statusFilter!=="All")   arr = arr.filter(p=>statuses[p.parcelId]===statusFilter);
+    if (search.trim()) {
+      const q = search.trim().toLowerCase();
+      arr = arr.filter(p=>p.parcelId.toLowerCase().includes(q)||p.address.toLowerCase().includes(q)||p.listing.toLowerCase().includes(q));
+    }
+    return arr;
+  }, [allParcels, zoneFilter, cduFilter, typeFilter, statusFilter, search, statuses]);
+
+  const paginated  = useMemo(()=>filtered.slice(page*PAGE_SIZE,(page+1)*PAGE_SIZE),[filtered,page]);
+  const totalPages = Math.ceil(filtered.length/PAGE_SIZE);
+
+  const exportXlsx = useCallback(() => {
+    const rows = allParcels.map(p => {
+      const suggestions = getAllCduSuggestions(p.yrblt) || {};
+      return {
+        Parcel_ID:p.parcelId, Address:p.address, City:p.city, Zone:p.zone,
+        Listing_Number:p.listing, SALEKEY:p.salekey,
+        YRBLT:p.yrblt, SFLA:p.sfla, FIXBATH:p.fixbath, FIXHALF:p.fixhalf,
+        Current_EFFYR:p.effyr, GRADE:p.grade, CDU:p.cdu,
+        Type:p.type==="mismatch"?"Mismatch":"Perfect",
+        Mismatches:(p.mismatches ? p.mismatches.length : 0),
+        Suggested_EFFYR:(suggestions[p.cdu] != null ? suggestions[p.cdu] : ""),
+        Sugg_EX:suggestions["EX"]||"", Sugg_VG:suggestions["VG"]||"",
+        Sugg_GD:suggestions["GD"]||"", Sugg_AV:suggestions["AV"]||"",
+        Sugg_FR:suggestions["FR"]||"", Sugg_PR:suggestions["PR"]||"",
+        Status:statuses[p.parcelId]||"",
+      };
+    });
+    const ws=XLSX.utils.json_to_sheet(rows);const wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,"Review");
+    XLSX.writeFile(wb,`review_status_${portalWeek||new Date().toISOString().slice(0,10)}.xlsx`);
+  }, [allParcels, statuses, portalWeek]);
+
+  const counts = useMemo(()=>({
+    unreviewed: allParcels.length-Object.keys(statuses).length,
+    reviewed:   Object.values(statuses).filter(s=>s==="Reviewed").length,
+    fieldVisit: Object.values(statuses).filter(s=>s==="Field Visit").length,
+  }),[allParcels,statuses]);
+
+  // -- Read API key status from context ------------------------------------
+  const currentApiKey = React.useContext(ApiKeyContext);
+  const apiKeyReady = !!currentApiKey && currentApiKey.trim().length > 0;
+
+  // -- Auto-load PRELOADED_DATA on mount ------------------------------------
+  useEffect(() => {
+    if (!PRELOADED) return;
+    const mm = groupByParcel((PRELOADED.mismatchRows||[]).map(r=>normalizeRow(r,"mismatches")));
+    const pm = groupByParcel((PRELOADED.perfectRows||[]).map(r=>normalizeRow(r,"perfect")));
+    setMismatches(mm);
+    setPerfects(pm);
+    // Load photo map from pre-baked base64 strings
+    if (PRELOADED.photoMap && Object.keys(PRELOADED.photoMap).length > 0) {
+      setPhotoMap(new Map(Object.entries(PRELOADED.photoMap)));
+    }
+  }, []);
+
+  // -- Detect a newer deployed build and prompt staff to reload --------------
+  // version.json (written by build_portal.py next to review_portal.html) carries
+  // the generatedAt of the live build. We compare it to the generatedAt baked
+  // into THIS page; if they differ, a newer portal has been published and the
+  // user is on a cached copy. Checked on load and every 5 min while open.
+  useEffect(() => {
+    if (!PRELOADED || !GITHUB_PAGES_BASE) return;
+    var myBuild = (PRELOADED.generatedAt || "").trim();
+    if (!myBuild) return;
+    function check() {
+      fetchLatestVersion().then(function(v) {
+        if (v && v.generatedAt && v.generatedAt.trim() !== myBuild) {
+          setNewBuildAvailable(true);
+        }
+      });
+    }
+    check();
+    var id = setInterval(check, 5 * 60 * 1000);
+    return function() { clearInterval(id); };
+  }, []);
+
+  // -- Hooks that must be before any early return ----------------------------
+  const handleNeedWindowId = useCallback((pendingUrl) => {
+    setWinIdModal({open:true, pendingUrl});
+  }, []);
+  const handleWindowIdConfirm = useCallback((id, pendingUrl) => {
+    setWindowId(id);
+    localStorage.setItem('iasworld_window_id', id);
+    localStorage.setItem('iasworld_window_id_date', new Date().toISOString().slice(0, 10));
+    setWinIdModal({open:false, pendingUrl:""});
+    if (pendingUrl) {
+      const features = 'width=1400,height=900,left=100,top=50,toolbar=yes,menubar=yes,scrollbars=yes,resizable=yes,location=yes,status=yes';
+      // Strip any existing windowId param before appending the fresh one
+      const cleanUrl = pendingUrl.replace(/[?&]windowId=[^&]*/gi, '').replace(/\?&/, '?').replace(/&&/, '&').replace(/[?&]$/, '');
+      const sep = cleanUrl.includes('?') ? '&' : '?';
+      window.open(cleanUrl + sep + 'windowId=' + id, 'iasWorldWindow', features);
+    }
+  }, []);
+
+  // portalLabel / fieldVisitParcels / handleNotifySupport must also be before the early return
+  const portalLabel = (portalSession && portalSession.createdAt) || weekKeyToLabel(portalWeek||currentWeekKey);
+  // Notify queue = Field Visit parcels NOT yet emailed to support
+  const fieldVisitParcels = useMemo(
+    () => allParcels.filter(p => statuses[p.parcelId]==="Field Visit" && !notified[p.parcelId]),
+    [allParcels, statuses, notified]);
+  // Open the modal with the current appraiser's own flagged parcels pre-checked
+  const openNotifyModal = useCallback(() => {
+    var me = getReviewerEmail();
+    var sel = {};
+    fieldVisitParcels.forEach(function(p){ sel[p.parcelId] = (reviewers[p.parcelId] === me); });
+    setNotifySelected(sel);
+    setNotifyModal({open:true, sending:false, sent:false});
+  }, [fieldVisitParcels, reviewers]);
+  const handleNotifySupport = useCallback((parcelIds) => {
+    if (!parcelIds || parcelIds.length === 0) return;
+    setNotifyModal({open:true, sending:true, sent:false});
+    apiNotifySupport(portalWeek, (PRELOADED&&PRELOADED.weekLabel)||portalLabel, parcelIds)
+      .then(res => {
+        if (res && res.ok && res.sent > 0) {
+          // Mark emailed parcels notified so they drop off everyone's queue
+          setNotified(prev => {
+            var n = Object.assign({}, prev);
+            parcelIds.forEach(function(id){ n[id] = true; });
+            return n;
+          });
+          setNotifyModal({open:false, sending:false, sent:true});
+        }
+        else setNotifyModal({open:false, sending:false, sent:false, error: res?.message || `No emails sent (${res?.sent ?? "?"} sent, ${res?.total ?? "?"} parcels found)`});
+      })
+      .catch(() => setNotifyModal({open:false, sending:false, sent:false, error:"Network error — check your connection"}));
+  }, [portalWeek, portalLabel]);
+
+  // -- Reload prompt shown in both views when a newer build is live ----------
+  const reloadBanner = newBuildAvailable ? (
+    <div style={{position:"fixed",top:0,left:0,right:0,zIndex:9999,background:"#b45309",color:"#fff",fontFamily:"'DM Mono',monospace",fontSize:13,padding:"9px 16px",display:"flex",alignItems:"center",justifyContent:"center",gap:14,boxShadow:"0 2px 12px #00000066"}}>
+      <span> A newer version of this week's data has been published.</span>
+      <button onClick={()=>{ var u=new URL(location.href); u.searchParams.set("v", Date.now()); location.replace(u.toString()); }}
+        style={{background:"#fff",color:"#b45309",border:"none",borderRadius:6,padding:"4px 14px",fontWeight:700,cursor:"pointer",fontFamily:"'DM Mono',monospace",fontSize:12}}>
+        Reload now
+      </button>
+    </div>
+  ) : null;
+
+  // -- HOME ------------------------------------------------------------------
+  if (view==="home") return (
+    <div style={{minHeight:"100vh",background:"linear-gradient(135deg,#0f172a 0%,#1e3a5f 50%,#0f172a 100%)",fontFamily:"'DM Sans',sans-serif",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"40px 20px"}}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;600;700&family=Syne:wght@700;800&display=swap');*{box-sizing:border-box;}`}</style>
+      {reloadBanner}
+
+      <div style={{textAlign:"center",marginBottom:28}}>
+        <div style={{fontSize:12,letterSpacing:"0.2em",color:"#7dd3fc",fontFamily:"'DM Mono',monospace",marginBottom:12,textTransform:"uppercase"}}>STARK COUNTY AUDITOR'S OFFICE  PROPERTY ASSESSMENT</div>
+        <h1 style={{fontFamily:"'Syne',sans-serif",fontSize:"clamp(28px,5vw,44px)",color:"#f8fafc",fontWeight:800,margin:0,letterSpacing:"-0.02em",lineHeight:1.1}}>
+          MLS / CAMA<br/><span style={{color:"#38bdf8"}}>Staff Review Portal</span>
+        </h1>
+      </div>
+
+      {/* Previous weeks */}
+      {Object.keys(sessions).length > 0 && (
+        <WeekSelectorPanel
+          sessions={sessions}
+          activeWeek={portalWeek}
+          onSelect={wk => { openPortal(wk); }}
+          onNewWeek={startNewWeek}
+        />
+      )}
+
+      {/* Pre-loaded data banner OR new week upload label */}
+      {PRELOADED && allParcelsHome.length > 0 ? (
+        <div style={{width:"100%",maxWidth:600,marginBottom:10,background:"#052e16",border:"1px solid #166534",borderRadius:10,padding:"10px 14px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <div>
+            <div style={{fontSize:11,color:"#4ade80",fontFamily:"'DM Mono',monospace",fontWeight:700,letterSpacing:"0.06em",marginBottom:2}}>
+               DATA PRE-LOADED BY ADMIN
+            </div>
+            <div style={{fontSize:10,color:"#166534",fontFamily:"'DM Mono',monospace"}}>
+              {PRELOADED.weekLabel}  Generated {PRELOADED.generatedAt}
+            </div>
+          </div>
+          <div style={{fontSize:10,color:"#4ade80",fontFamily:"'DM Mono',monospace",textAlign:"right"}}>
+            {allParcelsHome.length} parcels<br/>
+            {photoMap.size > 0 ? `${photoMap.size} photos` : "no photos"}
+          </div>
+        </div>
+      ) : (
+        <div style={{width:"100%",maxWidth:600,marginBottom:10}}>
+          <div style={{fontSize:11,color:"#7dd3fc",fontFamily:"'DM Mono',monospace",letterSpacing:"0.08em",marginBottom:6,display:"flex",alignItems:"center",gap:8}}>
+            <span style={{background:"#2563eb",color:"#fff",borderRadius:4,padding:"1px 7px",fontWeight:700}}>NEW</span>
+            {weekKeyToLabel(activeWeek || currentWeekKey).toUpperCase()}
+            {activeWeek && sessions[activeWeek] && (
+              <span style={{color:"#fbbf24",fontSize:10}}>(!) Re-uploading will keep existing review statuses</span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Uploads: 3 columns - hidden when pre-loaded data is present */}
+      {!PRELOADED && <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:14,width:"100%",maxWidth:600,marginBottom:20}}>
+        {[["STEP 1","VALUE MISMATCHES","mismatches",setMismatches,mismatches.length],
+          ["STEP 2","PERFECT MATCHES","perfect",setPerfects,perfects.length]].map(([step,label,type,setter,count])=>(
+          <div key={step} style={{background:"#1e293b",borderRadius:14,padding:14,border:"1px solid #334155"}}>
+            <div style={{fontSize:11,color:"#7dd3fc",fontFamily:"'DM Mono',monospace",marginBottom:8,letterSpacing:"0.08em"}}>{step}</div>
+            <DropZone label={label} loaded={count>0} count={count} onFile={f=>loadFile(f,type,setter)}/>
+          </div>
+        ))}
+        <div style={{background:"#1e293b",borderRadius:14,padding:14,border:"1px solid #334155"}}>
+          <div style={{fontSize:11,color:"#a78bfa",fontFamily:"'DM Mono',monospace",marginBottom:8,letterSpacing:"0.08em"}}>STEP 3 <span style={{color:"#475569"}}>(optional)</span></div>
+          <PhotoFolderUpload photoMap={photoMap} onPhotosLoaded={setPhotoMap}/>
+        </div>
+      </div>}
+
+      {allParcelsHome.length>0&&(
+        <div style={{display:"flex",gap:12,flexWrap:"wrap",justifyContent:"center",marginBottom:20}}>
+          {[["Total",allParcelsHome.length,"#38bdf8"],["Mismatches",mismatches.length,"#f87171"],["Perfect",perfects.length,"#4ade80"],["Photos",photoMap.size,"#a78bfa"]].map(([label,val,color])=>(
+            <div key={label} style={{background:"#1e293b",border:"1px solid #334155",borderRadius:99,padding:"7px 16px",display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontSize:18,fontWeight:800,color,fontFamily:"'DM Mono',monospace"}}>{val}</span>
+              <span style={{fontSize:11,color:"#94a3b8",letterSpacing:"0.04em"}}>{label.toUpperCase()}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* API Key warning - shown when data is loaded but no key set */}
+      {allParcelsHome.length > 0 && !apiKeyReady && (
+        <div style={{width:"100%",maxWidth:600,marginBottom:14,background:"#1c1208",border:"2px solid #d97706",borderRadius:12,padding:"14px 18px",display:"flex",alignItems:"flex-start",gap:12}}>
+          <span style={{fontSize:24,flexShrink:0}}></span>
+          <div>
+            <div style={{fontSize:13,fontWeight:700,color:"#fbbf24",fontFamily:"'DM Mono',monospace",letterSpacing:"0.06em",marginBottom:4}}>
+              SET API KEY BEFORE ENTERING PORTAL
+            </div>
+            <div style={{fontSize:12,color:"#92400e",fontFamily:"'DM Sans',sans-serif",lineHeight:1.6}}>
+              AI Grade &amp; Condition suggestions will <strong style={{color:"#fbbf24"}}>not work</strong> once inside the portal unless you set the key here first.<br/>
+              Click the <strong style={{color:"#fbbf24"}}> button</strong> in the bottom-right corner   paste your Anthropic API key   click Save Key.
+            </div>
+          </div>
+        </div>
+      )}
+      {allParcelsHome.length > 0 && apiKeyReady && (
+        <div style={{width:"100%",maxWidth:600,marginBottom:14,background:"#052e16",border:"1px solid #166534",borderRadius:10,padding:"10px 16px",display:"flex",alignItems:"center",gap:10}}>
+          <span style={{fontSize:18}}></span>
+          <span style={{fontSize:12,color:"#4ade80",fontFamily:"'DM Mono',monospace",fontWeight:700}}> API KEY SET - AI suggestions ready</span>
+        </div>
+      )}
+
+      <button disabled={allParcelsHome.length===0} onClick={saveAndOpenPortal}
+        style={{background:allParcelsHome.length>0?"linear-gradient(135deg,#2563eb,#0ea5e9)":"#334155",color:allParcelsHome.length>0?"#fff":"#64748b",border:"none",borderRadius:12,padding:"14px 40px",fontSize:15,fontWeight:700,cursor:allParcelsHome.length>0?"pointer":"not-allowed",fontFamily:"'Syne',sans-serif",letterSpacing:"0.04em",boxShadow:allParcelsHome.length>0?"0 4px 20px #2563eb55":"none",transition:"all 0.2s"}}>
+        {allParcelsHome.length>0?"Open Review Portal  ":"Upload files to continue"}
+      </button>
+    </div>
+  );
+
+  // -- PORTAL ----------------------------------------------------------------
+  const portalWId = windowId || (portalSession && portalSession.windowId);
+
+  return (
+    <React.Fragment>
+    {reloadBanner}
+    <div style={{minHeight:"100vh",background:"#f1f5f9",fontFamily:"'DM Sans',sans-serif"}}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;600;700&family=Syne:wght@700;800&display=swap');*{box-sizing:border-box;}::-webkit-scrollbar{width:6px;}::-webkit-scrollbar-track{background:#f1f5f9;}::-webkit-scrollbar-thumb{background:#94a3b8;border-radius:3px;}`}</style>
+
+      {/* Top bar */}
+      <div style={{background:"#0f172a",padding:"0 16px",display:"flex",alignItems:"center",justifyContent:"space-between",height:52,position:"sticky",top:0,zIndex:100,borderBottom:"1px solid #1e293b"}}>
+        <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0}}>
+          <button onClick={()=>setView("home")} style={{background:"none",border:"none",color:"#7dd3fc",cursor:"pointer",fontSize:13,fontFamily:"'DM Mono',monospace",padding:"4px 8px",borderRadius:6,flexShrink:0}}> Back Back</button>
+          <span style={{fontFamily:"'Syne',sans-serif",color:"#f8fafc",fontSize:14,fontWeight:800,letterSpacing:"-0.01em",whiteSpace:"nowrap"}}>MLS/CAMA Review</span>
+          {/* Week switcher */}
+          {Object.keys(sessions).length > 1 && (
+            <select value={portalWeek||""} onChange={e=>{ if(e.target.value) { openPortal(e.target.value); setPage(0); } }}
+              style={{padding:"3px 8px",borderRadius:6,border:"1px solid #334155",background:"#1e293b",color:"#7dd3fc",fontFamily:"'DM Mono',monospace",fontSize:11,cursor:"pointer",outline:"none",maxWidth:180}}>
+              {Object.keys(sessions).sort().reverse().map(k=>(
+                <option key={k} value={k}>{weekKeyToLabel(k)}</option>
+              ))}
+            </select>
+          )}
+          {Object.keys(sessions).length === 1 && portalWeek && (
+            <span style={{fontSize:11,color:"#38bdf8",fontFamily:"'DM Mono',monospace",background:"#1e293b",border:"1px solid #334155",borderRadius:6,padding:"3px 8px"}}>{weekKeyToLabel(portalWeek)}</span>
+          )}
+          {portalPhotos.size>0&&<span style={{fontSize:10,background:"#7c3aed22",border:"1px solid #7c3aed66",color:"#a78bfa",borderRadius:4,padding:"2px 6px",fontFamily:"'DM Mono',monospace",fontWeight:700,flexShrink:0}}> {portalPhotos.size}</span>}
+        </div>
+        <div style={{display:"flex",gap:8,alignItems:"center",flexShrink:0}}>
+          {[["UNR",counts.unreviewed,"#94a3b8","Unreviewed"],["REV",counts.reviewed,"#4ade80","Reviewed"],["FLD",counts.fieldVisit,"#60a5fa","Field Visit"]].map(([abbr,val,color,title])=>(
+            <div key={abbr} title={title} style={{fontSize:11,fontFamily:"'DM Mono',monospace",color:"#94a3b8",display:"flex",alignItems:"center",gap:2}}>
+              <span style={{color,fontWeight:700,fontSize:13}}>{val}</span>
+              <span style={{fontSize:9,color:"#475569"}}>{abbr}</span>
+            </div>
+          ))}
+          <button onClick={exportXlsx} style={{marginLeft:4,background:"#1e293b",border:"1px solid #334155",color:"#7dd3fc",borderRadius:8,padding:"5px 10px",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"'DM Mono',monospace",letterSpacing:"0.04em"}}> Export</button>
+          {fieldVisitParcels.length > 0 && !isPastWeek && (
+            <button onClick={openNotifyModal}
+              style={{marginLeft:4,background:"#1e3a8a",border:"1px solid #3b82f6",color:"#93c5fd",borderRadius:8,padding:"5px 10px",fontSize:11,fontWeight:700,cursor:"pointer",fontFamily:"'DM Mono',monospace",letterSpacing:"0.04em",display:"flex",alignItems:"center",gap:5}}>
+               Notify Support
+              <span style={{background:"#2563eb",color:"#fff",borderRadius:99,padding:"1px 7px",fontSize:10,fontWeight:800}}>{fieldVisitParcels.length}</span>
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Filter bar */}
+      <div style={{background:"#fff",borderBottom:"1px solid #e5e7eb",padding:"10px 24px",display:"flex",gap:10,flexWrap:"wrap",alignItems:"center"}}>
+        <input value={search} onChange={e=>{setSearch(e.target.value);setPage(0);}} placeholder="Search parcel, address, listing #..."
+          style={{padding:"6px 12px",borderRadius:8,border:"1.5px solid #d1d5db",fontSize:12,fontFamily:"'DM Mono',monospace",outline:"none",width:220,background:"#fafafa"}}/>
+        <select value={zoneFilter} onChange={e=>{setZoneFilter(e.target.value);setPage(0);}}
+          style={{padding:"6px 10px",borderRadius:8,border:"1.5px solid #d1d5db",fontSize:12,fontFamily:"'DM Mono',monospace",background:"#fafafa",cursor:"pointer",outline:"none"}}>
+          {zones.map(z=><option key={z} value={z}>{z==="All"?"All Zones":` ${z}`}</option>)}
+        </select>
+        <select value={cduFilter} onChange={e=>{setCduFilter(e.target.value);setPage(0);}}
+          style={{padding:"6px 10px",borderRadius:8,border:"1.5px solid #d1d5db",fontSize:12,fontFamily:"'DM Mono',monospace",background:"#fafafa",cursor:"pointer",outline:"none"}}>
+          <option value="All">All CDU</option>
+          {CDU_ORDER.map(c=><option key={c} value={c}>{c} - {CDU_CONFIG[c].full}</option>)}
+        </select>
+        {["All","Mismatches","Perfect"].map(t=>(
+          <button key={t} onClick={()=>{setTypeFilter(t);setPage(0);}} style={{padding:"5px 12px",borderRadius:8,fontSize:11,fontWeight:700,fontFamily:"'DM Mono',monospace",cursor:"pointer",border:"1.5px solid",borderColor:typeFilter===t?"#2563eb":"#d1d5db",background:typeFilter===t?"#dbeafe":"#fafafa",color:typeFilter===t?"#1d4ed8":"#6b7280",transition:"all 0.15s"}}>
+            {t==="Mismatches"?"(!) Mismatches":t==="Perfect"?" Perfect":"All Types"}
+          </button>
+        ))}
+        <select value={statusFilter} onChange={e=>{setStatusFilter(e.target.value);setPage(0);}}
+          style={{padding:"6px 10px",borderRadius:8,border:"1.5px solid #d1d5db",fontSize:12,fontFamily:"'DM Mono',monospace",background:"#fafafa",cursor:"pointer",outline:"none"}}>
+          {["All","Unreviewed",...STATUSES].map(s=><option key={s}>{s}</option>)}
+        </select>
+        <button onClick={()=>setWinIdModal({open:true,pendingUrl:""})}
+          style={{marginLeft:"auto",padding:"5px 10px",borderRadius:8,border:"1.5px solid",borderColor:portalWId?"#334155":"#f59e0b",background:portalWId?"#f8fafc":"#fef3c7",color:portalWId?"#374151":"#92400e",fontFamily:"'DM Mono',monospace",fontSize:11,fontWeight:700,cursor:"pointer",whiteSpace:"nowrap"}}
+          title="The iasWorld windowId changes daily — update it here">
+          {portalWId ? `iasWorld ID: …${portalWId.slice(-6)}` : "⚠ Set iasWorld ID"}
+        </button>
+        <span style={{fontSize:11,color:"#6b7280",fontFamily:"'DM Mono',monospace",whiteSpace:"nowrap"}}>
+          {filtered.length} parcels  page {page+1}/{Math.max(1,totalPages)}
+        </span>
+      </div>
+
+      {/* Cards */}
+      <div style={{padding:"20px 24px",maxWidth:1400,margin:"0 auto"}}>
+        {archiveEmpty?(
+          <div style={{textAlign:"center",padding:"60px 20px",color:"#9ca3af"}}>
+            <div style={{fontSize:32,marginBottom:12}}>&#9203;</div>
+            <div style={{fontSize:15,color:"#60a5fa",fontFamily:"'DM Mono',monospace",marginBottom:8}}>Loading past week data...</div>
+            <div style={{fontSize:12,color:"#6b7280"}}>Fetching parcel cards from archive.</div>
+          </div>
+        ):paginated.length===0?(
+          <div style={{textAlign:"center",padding:"60px 20px",color:"#9ca3af"}}>
+            <div style={{fontSize:32,marginBottom:12}}>&#128269;</div>
+            <div style={{fontSize:14,fontFamily:"'DM Mono',monospace"}}>No parcels match your filters</div>
+          </div>
+                ):(
+          <div style={{display:"grid",gridTemplateColumns:"1fr",gap:18,maxWidth:860,margin:"0 auto"}}>
+            {paginated.map(p=>{
+              const pid = String(p.parcelId);
+              const photoKey = pid.replace(/-1$/,"");
+              const photoUrls = [portalPhotos.get(photoKey)||portalPhotos.get(pid),portalPhotos.get(pid+'-2'),portalPhotos.get(pid+'-3'),portalPhotos.get(pid+'-4')].filter(Boolean);
+              return <PropertyCard key={p.parcelId} parcel={p} status={statuses[p.parcelId]||null} onStatus={setStatus} windowId={portalWId} photoUrls={photoUrls} isPastWeek={isPastWeek} onNeedWindowId={handleNeedWindowId} note={notes[p.parcelId]||""} onNote={setNote}/>;
+            })}
+          </div>
+        )}
+        {totalPages>1&&(
+          <div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:8,marginTop:32,paddingBottom:32}}>
+            <button disabled={page===0} onClick={()=>setPage(p=>p-1)} style={{padding:"7px 16px",borderRadius:8,border:"1.5px solid #d1d5db",background:page===0?"#f9fafb":"#fff",cursor:page===0?"not-allowed":"pointer",color:page===0?"#9ca3af":"#374151",fontFamily:"'DM Mono',monospace",fontSize:12}}> Back Prev</button>
+            {Array.from({length:Math.min(totalPages,7)},(_,i)=>{
+              const pNum=totalPages<=7?i:Math.max(0,Math.min(page-3,totalPages-7))+i;
+              return <button key={pNum} onClick={()=>setPage(pNum)} style={{padding:"7px 12px",borderRadius:8,border:"1.5px solid",borderColor:page===pNum?"#2563eb":"#d1d5db",background:page===pNum?"#dbeafe":"#fff",color:page===pNum?"#1d4ed8":"#374151",fontFamily:"'DM Mono',monospace",fontSize:12,cursor:"pointer"}}>{pNum+1}</button>;
+            })}
+            <button disabled={page===totalPages-1} onClick={()=>setPage(p=>p+1)} style={{padding:"7px 16px",borderRadius:8,border:"1.5px solid #d1d5db",background:page===totalPages-1?"#f9fafb":"#fff",cursor:page===totalPages-1?"not-allowed":"pointer",color:page===totalPages-1?"#9ca3af":"#374151",fontFamily:"'DM Mono',monospace",fontSize:12}}>Next  </button>
+          </div>
+        )}
+      </div>
+    </div>
+    {winIdModal.open && (
+      <WindowIdModal
+        pendingUrl={winIdModal.pendingUrl}
+        onConfirm={handleWindowIdConfirm}
+        onCancel={()=>setWinIdModal({open:false,pendingUrl:""})}
+      />
+    )}
+    {notifyModal.open && (
+      <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.6)',zIndex:10000,display:'flex',alignItems:'center',justifyContent:'center'}}>
+        <div style={{background:'#1e293b',border:'1px solid #334155',borderRadius:14,padding:24,width:520,maxWidth:'92vw',maxHeight:'80vh',display:'flex',flexDirection:'column',boxShadow:'0 16px 48px rgba(0,0,0,0.6)'}}>
+          {(() => {
+          var me = getReviewerEmail();
+          var selectedIds = fieldVisitParcels.filter(p=>notifySelected[p.parcelId]).map(p=>p.parcelId);
+          var allChecked = fieldVisitParcels.length>0 && selectedIds.length===fieldVisitParcels.length;
+          return (<>
+          <div style={{fontSize:12,fontWeight:700,color:'#7dd3fc',fontFamily:"'DM Mono',monospace",letterSpacing:'0.06em',marginBottom:4}}>NOTIFY SUPPORT STAFF</div>
+          <div style={{fontSize:12,color:'#94a3b8',marginBottom:10}}>Checked parcels are emailed to Stephanie and Jill based on zone. Your own flagged parcels are pre-checked; check others only if you're covering their zone.</div>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}}>
+            <button onClick={()=>{var n={};fieldVisitParcels.forEach(p=>{n[p.parcelId]=!allChecked;});setNotifySelected(n);}}
+              style={{background:'transparent',border:'1px solid #334155',color:'#7dd3fc',borderRadius:6,padding:'3px 10px',fontFamily:"'DM Mono',monospace",fontSize:11,cursor:'pointer'}}>
+              {allChecked ? 'Uncheck all' : 'Check all'}
+            </button>
+            <span style={{fontSize:11,color:'#64748b',fontFamily:"'DM Mono',monospace"}}>{selectedIds.length} of {fieldVisitParcels.length} selected</span>
+          </div>
+          <div style={{overflowY:'auto',flex:1,marginBottom:16}}>
+            {fieldVisitParcels.map(p=>{
+              var mine = reviewers[p.parcelId]===me;
+              var checked = !!notifySelected[p.parcelId];
+              return (
+              <label key={p.parcelId} style={{display:'flex',gap:10,alignItems:'flex-start',padding:'10px 12px',marginBottom:6,background:'#0f172a',borderRadius:8,border:'1px solid '+(checked?'#3b82f6':'#334155'),cursor:'pointer'}}>
+                <input type="checkbox" checked={checked} onChange={()=>setNotifySelected(s=>Object.assign({},s,{[p.parcelId]:!s[p.parcelId]}))} style={{marginTop:3,cursor:'pointer'}}/>
+                <div style={{flex:1}}>
+                  <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8}}>
+                    <div>
+                      <span style={{fontFamily:"'DM Mono',monospace",fontSize:13,fontWeight:700,color:'#f8fafc'}}>{p.parcelId}</span>
+                      <span style={{fontSize:12,color:'#94a3b8',marginLeft:10}}>{p.address}</span>
+                    </div>
+                    <span style={{fontSize:11,background:'#1e3a8a',color:'#93c5fd',borderRadius:4,padding:'2px 8px',fontFamily:"'DM Mono',monospace",whiteSpace:'nowrap',flexShrink:0}}>{p.zone||'no zone'}</span>
+                  </div>
+                  {notes[p.parcelId] && <div style={{fontSize:11,color:'#60a5fa',marginTop:4,fontFamily:"'DM Sans',sans-serif"}}>Reason: {notes[p.parcelId]}</div>}
+                  <div style={{fontSize:10,color:mine?'#4ade80':'#64748b',marginTop:3,fontFamily:"'DM Mono',monospace"}}>{mine?'flagged by you':'flagged by '+(reviewers[p.parcelId]||'unknown')}</div>
+                </div>
+              </label>
+            );})}
+          </div>
+          <div style={{display:'flex',gap:8}}>
+            <button onClick={()=>handleNotifySupport(selectedIds)} disabled={notifyModal.sending||selectedIds.length===0}
+              style={{flex:1,padding:'10px',borderRadius:7,border:'none',background:(notifyModal.sending||selectedIds.length===0)?'#334155':'#1d4ed8',color:(notifyModal.sending||selectedIds.length===0)?'#64748b':'#fff',fontFamily:"'DM Mono',monospace",fontSize:12,fontWeight:700,cursor:(notifyModal.sending||selectedIds.length===0)?'not-allowed':'pointer'}}>
+              {notifyModal.sending ? 'Sending...' : `Send Email${selectedIds.length!==1?'s':''}${selectedIds.length?' ('+selectedIds.length+')':''} →`}
+            </button>
+            <button onClick={()=>setNotifyModal({open:false,sending:false,sent:false})}
+              style={{padding:'10px 16px',borderRadius:7,border:'1px solid #334155',background:'transparent',color:'#64748b',fontFamily:"'DM Mono',monospace",fontSize:12,cursor:'pointer'}}>
+              Cancel
+            </button>
+          </div>
+          </>);
+          })()}
+        </div>
+      </div>
+    )}
+    {notifyModal.sent && (
+      <div style={{position:'fixed',bottom:72,right:16,zIndex:9998,background:'#065f46',color:'#d1fae5',padding:'10px 16px',borderRadius:10,fontSize:12,fontFamily:"'DM Mono',monospace",fontWeight:700,boxShadow:'0 4px 12px rgba(0,0,0,0.3)'}}>
+        ✓ Support staff notified
+      </div>
+    )}
+    {notifyModal.error && (
+      <div onClick={()=>setNotifyModal(m=>({...m,error:null}))} style={{position:'fixed',bottom:72,right:16,zIndex:9998,background:'#7f1d1d',color:'#fecaca',padding:'10px 16px',borderRadius:10,fontSize:12,fontFamily:"'DM Mono',monospace",fontWeight:700,boxShadow:'0 4px 12px rgba(0,0,0,0.3)',cursor:'pointer',maxWidth:320}}>
+        ⚠ Notify failed: {notifyModal.error}
+      </div>
+    )}
+    </React.Fragment>
+  );
+}
+
+// --- Root with API Key Provider ----------------------------------------------
+function Root() {
+  // Load key from localStorage first, fall back to pre-baked value (never pushed to GitHub)
+  const [apiKey, setApiKey] = React.useState(() => {
+    return localStorage.getItem('anthropic_api_key') || (window.PRELOADED_API_KEY || '').trim();
+  });
+  const [keyInput, setKeyInput] = React.useState('');
+  const [showKeyPanel, setShowKeyPanel] = React.useState(false);
+  const [keySaved, setKeySaved] = React.useState(false);
+
+  const saveKey = () => {
+    const k = keyInput.trim();
+    setApiKey(k);
+    localStorage.setItem('anthropic_api_key', k);
+    setKeySaved(true);
+    setShowKeyPanel(false);
+    setTimeout(() => setKeySaved(false), 3000);
+  };
+
+  return (
+    <ApiKeyContext.Provider value={apiKey}>
+      {/* Floating key button */}
+      <div style={{position:'fixed',bottom:16,right:16,zIndex:9999,display:'flex',flexDirection:'column',alignItems:'flex-end',gap:8}}>
+        {keySaved && (
+          <div style={{background:'#065f46',color:'#d1fae5',padding:'6px 12px',borderRadius:8,fontSize:11,fontFamily:"'DM Mono',monospace",fontWeight:700,boxShadow:'0 2px 8px #0004'}}>
+            ✓ API key saved
+          </div>
+        )}
+        {showKeyPanel && (
+          <div style={{background:'#1e293b',border:'1px solid #334155',borderRadius:12,padding:16,width:320,boxShadow:'0 8px 32px #0006'}}>
+            <div style={{fontSize:11,color:'#7dd3fc',fontFamily:"'DM Mono',monospace",letterSpacing:'0.08em',marginBottom:8}}>ANTHROPIC API KEY</div>
+            <div style={{fontSize:10,color:'#64748b',fontFamily:"'DM Mono',monospace",marginBottom:10,lineHeight:1.5}}>
+              {apiKey
+                ? <span style={{color:'#4ade80'}}>✓ Key saved in this browser — AI suggestions are ready.</span>
+                : <span>Enter once — saved in your browser permanently.<br/>Never shared or sent anywhere except Anthropic.</span>
+              }
+            </div>
+            <input
+              type="password"
+              value={keyInput}
+              onChange={e => setKeyInput(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && saveKey()}
+              placeholder="sk-ant-..."
+              style={{width:'100%',padding:'7px 10px',borderRadius:7,border:'1px solid #334155',background:'#0f172a',color:'#f8fafc',fontFamily:"'DM Mono',monospace",fontSize:12,outline:'none',marginBottom:8}}
+            />
+            <div style={{display:'flex',gap:8}}>
+              <button onClick={saveKey}
+                style={{flex:1,padding:'7px',borderRadius:7,border:'none',background:'#2563eb',color:'#fff',fontSize:11,fontWeight:700,cursor:'pointer',fontFamily:"'DM Mono',monospace"}}>
+                Save Key
+              </button>
+              <button onClick={() => setShowKeyPanel(false)}
+                style={{padding:'7px 12px',borderRadius:7,border:'1px solid #334155',background:'transparent',color:'#64748b',fontSize:11,cursor:'pointer',fontFamily:"'DM Mono',monospace"}}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+        <button onClick={() => setShowKeyPanel(k => !k)}
+          title={apiKey ? "API key set — click to change" : "Set API key for AI suggestions"}
+          style={{width:40,height:40,borderRadius:'50%',border:'none',background:apiKey?'#059669':'#334155',color:'#fff',fontSize:16,cursor:'pointer',boxShadow:'0 2px 8px #0004',display:'flex',alignItems:'center',justifyContent:'center',transition:'background 0.2s'}}>
+          {apiKey ? '🔑' : '🧠'}
+        </button>
+      </div>
+      <App />
+    </ApiKeyContext.Provider>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById('root'));
+root.render(<Root />);
+
+  </script>
+</body>
+</html>

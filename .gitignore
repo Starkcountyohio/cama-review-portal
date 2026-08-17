@@ -50,3 +50,9 @@ ZillowPhotos/*
 !build_portal.py
 !monthly_retrain.py
 !update_prompt.py
+
+# build_portal.py reads this template (see its template_path) — without it a fresh
+# clone cannot rebuild the portal. No new exposure: the built review_portal.html in
+# this repo already contains the whole template with the week's data injected.
+# Never let a real API key into it; the portal takes the key at runtime instead.
+!review_portal_template.html
