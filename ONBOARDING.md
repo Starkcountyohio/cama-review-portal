@@ -19,8 +19,10 @@ from the project root: `Portal Builder/`.
 ---
 
 ## Prerequisites (once per machine)
-- `Automation Domination/credentials.py` present (**not** committed — see the
-  internal setup notes for how to obtain it).
+- `Automation Domination/credentials.py` present. **Not** committed and never will
+  be — copy `credentials.example.py` to `credentials.py` and fill in the real
+  values from the internal setup notes. Every other pipeline script *is* tracked,
+  so a fresh clone plus this one file is a working build machine.
 - Network access to the CAMA database and to MLS Now from the build machine.
   If step 1 fails, check credentials and the database service before assuming a
   connectivity problem — that is rarely the cause on a configured build machine.
