@@ -140,9 +140,15 @@ exterior. For each bad one, look up its MLS number (match the parcel ID against
 `value_mismatches_*.xlsx` / `perfect_matches_*.xlsx`, column `Listing_Number`),
 pull the correct exterior, and save it as `<parcel>-1.jpg`.
 
-**CRITICAL — the swap must land in BOTH folders:**
+**Save each swap ONCE, into either folder** — as of W34 the build syncs them:
 - `MLSvsCAMA/<week>/Photos_New/` → feeds the iasWorld photo-upload CSV
 - `MLSvsCAMA/<week>/Photos_New_Portal/` → feeds the portal build
+
+`photo_checks.sync_primaries()` runs at the top of `run_build.py` (and right after
+the review gate in `run_weekly.py`), propagates any `<parcel>-1.jpg` that exists in
+only one folder or differs between them, and prints every file it moved. Direction
+is by mtime, so the copy you just saved wins. Saving into both by hand is still
+fine — identical bytes are a no-op.
 
 **The photo gate will NOT catch a one-off headshot.** `photo_checks.py` flags a
 headshot only when the *same image* is the lead on 2+ parcels. A single unique
@@ -164,11 +170,34 @@ image the official primary in iasWorld. In W33 only `5218304` qualified —
 `211596`'s secondary was a rear/side view and `213306`'s was an interior bedroom,
 so both got manual pulls instead.
 
-The copy into `Photos_New_Portal` silently **does not take** with some regularity
-— it has now happened in W22, W24, W30, W32 and again in **W33**, where 4 of the
-5 manual fixes never reached the portal folder and a 5th left the old headshot
-in place. Filenames and counts matched both times; only a content hash caught it.
-Verify after any swap:
+**Why a parcel shows up with secondaries but no primary.**
+`download_zillow_photos.py:365-371` rejects photo 1 outright when it is portrait
+(`h > w`), on the theory that headshots are portrait and houses are landscape.
+When that fires, `-1` is written to *neither* folder while `-2/-3/-4` still land in
+`Photos_New_Portal` — that is the "3 secondaries, no primary" signature, visible in
+the mapping CSV as `Success` with `Photos = 3`. The screen is miscalibrated in both
+directions and is a known open issue: in W34 it **rejected two genuine houses**
+(`202027` and `209854`, both 576x768 portrait phone shots that then had to be
+pulled by hand) while **missing the actual headshot** on `247844`, which was
+240x240 — *square*, so `h > w` was false. The recurring W30/W32 headshot was the
+same 240x240. Until the threshold is retuned, expect portrait exteriors to need
+manual pulls, and never trust the check to have caught a headshot.
+
+**Root cause, found in W34 — earlier versions of this guide had it wrong.** This
+was described for six weeks (W22, W24, W30, W32, W33, W34) as a copy that
+"silently does not take". There was no such copy. **No code path writes one photo
+folder without the other**, so nothing existed to fail intermittently:
+`download_zillow_photos.py:521-527` downloads photo 1 into `Photos_New_Portal` and
+then *derives* `Photos_New` from it with `shutil.copy2`. The real data flow is
+**Portal → Photos_New**, the reverse of what this guide used to imply. A manual fix
+was therefore propagated only by the operator remembering to write the same file
+into two directories, with nothing but a printed reminder enforcing it — and
+`Photos_New`, which holds only `-1.jpg` files, reads as "the primaries folder"
+where a replacement primary naturally belongs. Six weeks out of six is a process
+gap, not a filesystem gremlin. `sync_primaries()` now closes it.
+
+The verification below is still worth knowing, but it is now a **check that the
+sync worked**, not the thing standing between a missed swap and the live portal:
 
 ```bash
 # from MLSvsCAMA/<week>/
