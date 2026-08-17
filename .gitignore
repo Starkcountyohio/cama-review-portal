@@ -45,4 +45,8 @@ Automation Domination/credentials.py
 !ZillowPhotos/
 ZillowPhotos/*
 !ZillowPhotos/*.py
+
+# Weekly build + monthly prompt retraining (both documented in CLAUDE.md).
 !build_portal.py
+!monthly_retrain.py
+!update_prompt.py
