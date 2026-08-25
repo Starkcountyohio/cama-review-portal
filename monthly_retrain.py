@@ -47,6 +47,9 @@ AD_DIR     = ROOT / "Automation Domination"
 
 sys.path.insert(0, str(AD_DIR))
 from credentials import ORACLE_USER, ORACLE_PASSWORD, ORACLE_DSN
+# Single source of truth for the future-year layer (same import make_photo_upload uses;
+# playwright is imported lazily inside create_future_year, so this is cheap).
+from create_future_year import TARGET_TAX_YEAR
 
 # ── Grade/CDU rankings ─────────────────────────────────────────────────────────
 CDU_RANK = {"PR": 0, "FR": 1, "AV": 2, "GD": 3, "VG": 4, "EX": 5}
@@ -74,12 +77,24 @@ HARD_NEG = ["estate sale", "cash only", "sold as is", "sold as-is", "vacant", "a
 
 # ── Step 1: Load recent archive JSON files ─────────────────────────────────────
 
-def load_recent_archives(n_weeks=4):
-    """Load the n most recent weekly archive JSON files."""
+def load_recent_archives(n_weeks=4, skip_recent=0):
+    """Load the n most recent weekly archive JSON files.
+
+    skip_recent drops that many of the NEWEST weeks first. The current week's
+    parcels have no appraiser decisions yet — Jason builds the portal Monday and
+    appraisers review Tue–Fri — so including the freshest week adds a block of
+    guaranteed no-change rows that reads as "appraiser agreed" and dilutes every
+    rate. Use skip_recent=1 when retraining on the same day as a build.
+    """
     files = sorted(ARCHIVE.glob("*.json"))
     if not files:
         print("ERROR: No archive JSON files found in archive/")
         sys.exit(1)
+    if skip_recent:
+        skipped = [f.stem for f in files[-skip_recent:]]
+        files = files[:-skip_recent]
+        print(f"  Skipping newest {skip_recent} week(s) (not yet reviewed): "
+              f"{', '.join(skipped)}")
     recent = files[-n_weeks:]
     print(f"  Archive files: {', '.join(f.stem for f in recent)}")
 
@@ -100,12 +115,25 @@ def load_recent_archives(n_weeks=4):
 # ── Step 2: Query Oracle for current Grade/CDU ─────────────────────────────────
 
 def fetch_grade_cdu(parcel_ids: list) -> dict:
-    """Query DWELDAT for current GRADE, CDU, TAXYR, CARD. Returns {parid: row}."""
+    """Query DWELDAT for the appraiser's CURRENT GRADE/CDU. Returns {parid: row}.
+
+    Reads BOTH the current-year and future-year layers and prefers the future year
+    when a row exists there. Since create_future_year.py went to prod (2026-W29),
+    appraisers record their Grade/CDU decisions on the FUTURE-year record, not the
+    current one — sales are being ordered into the future year while CAMA is still
+    on the current one. Querying only `TAXYR = current_year` therefore reads a layer
+    nobody has touched and reports ~0% change for every recent week, which silently
+    deflates every rate and signal weight in the report. Measured 2026-08-25 over
+    W24–W35: 0–1% change vs the current-year layer for W29+, 34–41% vs the future
+    year, with the break falling exactly on the week the 2027 workflow started.
+    Older weeks have no future-year row and fall back to the current year.
+    """
     current_year = date.today().year
     print(f"  Connecting to Oracle ({ORACLE_DSN})...")
+    print(f"  Layers: preferring TAXYR={TARGET_TAX_YEAR}, falling back to {current_year}")
 
     conn = oracledb.connect(user=ORACLE_USER, password=ORACLE_PASSWORD, dsn=ORACLE_DSN)
-    results = {}
+    by_year = {}   # parid -> {taxyr: row}
 
     # Oracle IN clause limit is 1000 — batch if needed
     batch_size = 999
@@ -119,12 +147,12 @@ def fetch_grade_cdu(parcel_ids: list) -> dict:
                     SELECT PARID, GRADE, CDU, TAXYR, CARD
                     FROM DWELDAT
                     WHERE PARID IN ({placeholders})
-                      AND TAXYR = {current_year}
+                      AND TAXYR IN ({current_year}, {TARGET_TAX_YEAR})
                 """
                 cur.execute(sql, batch)
                 for row in cur.fetchall():
                     parid = str(row[0]).strip()
-                    results[parid] = {
+                    by_year.setdefault(parid, {})[int(row[3])] = {
                         "PARID":  parid,
                         "GRADE":  str(row[1]).strip() if row[1] else "",
                         "CDU":    str(row[2]).strip() if row[2] else "",
@@ -134,7 +162,17 @@ def fetch_grade_cdu(parcel_ids: list) -> dict:
     finally:
         conn.close()
 
-    print(f"  Oracle returned: {len(results)} parcels with Grade/CDU")
+    results, from_future = {}, 0
+    for parid, years in by_year.items():
+        if TARGET_TAX_YEAR in years:
+            results[parid] = years[TARGET_TAX_YEAR]
+            from_future += 1
+        elif current_year in years:
+            results[parid] = years[current_year]
+
+    print(f"  Oracle returned: {len(results)} parcels with Grade/CDU "
+          f"({from_future} from {TARGET_TAX_YEAR}, "
+          f"{len(results) - from_future} from {current_year})")
     return results
 
 
@@ -540,12 +578,23 @@ def push_github(trained_month: str):
 def main():
     trained_month = date.today().strftime("%B %Y")
 
+    # Window is a flag, not a constant: a normal monthly run wants 4 weeks, but a
+    # catch-up run after skipped months needs a wider one or those weeks' decisions
+    # are silently discarded (load_recent_archives only ever takes the newest N).
+    n_weeks = 4
+    skip_recent = 0
+    for i, a in enumerate(sys.argv):
+        if a == "--weeks" and i + 1 < len(sys.argv):
+            n_weeks = int(sys.argv[i + 1])
+        elif a == "--skip-recent" and i + 1 < len(sys.argv):
+            skip_recent = int(sys.argv[i + 1])
+
     print("\n" + "=" * 65)
     print("  STARK COUNTY — MONTHLY AI GRADE & CONDITION RETRAINING")
     print("=" * 65)
 
-    print("\n[1/6] Loading recent archive data (4 weeks)...")
-    portal, weeks = load_recent_archives(n_weeks=4)
+    print(f"\n[1/6] Loading recent archive data ({n_weeks} weeks)...")
+    portal, weeks = load_recent_archives(n_weeks=n_weeks, skip_recent=skip_recent)
 
     print("\n[2/6] Querying Oracle for current Grade/CDU...")
     oracle = fetch_grade_cdu(list(portal.keys()))
