@@ -13,10 +13,21 @@ WHY THIS EXISTS
     by its PIN, Simple Copy -> next Tax Year -> Create Parcel -> Close — looped
     over the portal's parcel list.
 
-HOW THE iasWorld (EA&T) UI WORKS (confirmed against CAST)
-    - Login page (main/Login.aspx) is an Angular shell over the classic form:
-      visible fields #wrapperusername / #wrapperpassword (Domain pre-filled
-      "stark"), submit via the visible "SIGN IN" button.
+HOW LOGIN WORKS (Tyler CLOUD, Sept 2026 — starkcountyoh.atentcloud.tylerapp.com)
+    - Opening the app unauthenticated redirects to Tyler Portico
+      (idgw.tylerportico.com), which is identifier-first: enter username/email
+      (#Input_Username) + "Next". Portico then federates to Microsoft Entra ID
+      (login.microsoftonline.com) for the password (#i0118) + "Sign in"
+      (#idSIButton9), then a "Stay signed in?" prompt (#idSIButton9 = Yes).
+      Success = the URL is back on atentcloud.tylerapp.com.
+    - No MFA today, but a FRESH automation browser can trip Conditional Access
+      that your day-to-day browser skips. So the session cookie is saved to
+      cloud_session.json (gitignored) after the first success and reused each
+      week; --manual-login lets you finish a one-off MFA/verification by hand and
+      then saves the session; --relogin ignores a saved session.
+
+HOW THE iasWorld TRANSACTION UI WORKS  (⚠ confirmed on OLD self-hosted CAST —
+    RE-VERIFY on cloud; the menu/Simple Copy selectors below may have changed)
     - Parcels can't be deep-linked: Transact.aspx needs a windowId that only
       exists once a transaction is open. So we open the "Multi-Use" transaction
       once (menu -> Transactions -> Multi-Use). That spawns a new window at
@@ -27,13 +38,14 @@ HOW THE iasWorld (EA&T) UI WORKS (confirmed against CAST)
 
 WHEN TO RUN
     Every Monday, AFTER run_weekly.py produces the week's compare files.
-    Prove it in CAST first; only aim at PRODUCTION once proven.
+    Cloud is a single PRODUCTION environment now — prove it with --dry-run/--limit 1.
 
-    python create_future_year.py --list-only                 # print worklist, no browser
-    python create_future_year.py --env cast --dry-run --diag  # nav + load each parcel, create NOTHING
-    python create_future_year.py --env cast --limit 1         # real: one parcel in CAST
-    python create_future_year.py --env cast                   # real: full CAST run
-    python create_future_year.py --env prod                   # PRODUCTION (must type YES)
+    python create_future_year.py --list-only                        # worklist only, no browser
+    python create_future_year.py --manual-login --dry-run --limit 1 --diag
+                                                                    # FIRST TIME: sign in by hand, save session, load 1 parcel, create NOTHING
+    python create_future_year.py --dry-run --limit 1 --diag          # reuse session; load 1 parcel, create NOTHING
+    python create_future_year.py --limit 1                           # real: create ONE record (must type YES)
+    python create_future_year.py                                     # real: full production run (must type YES)
 
 OUTPUT
     future_year_log_<date>.csv  (Parcel_ID, status, detail, when)
@@ -47,6 +59,7 @@ import csv
 import argparse
 import datetime as _dt
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pandas as pd
 import credentials
@@ -63,21 +76,35 @@ TARGET_TAX_YEAR = 2027                     # bump each January — see module do
 HERE            = Path(__file__).parent
 PORTAL_ROOT     = HERE.parent
 MLSCAMA_ROOT    = PORTAL_ROOT / "MLSvsCAMA"
-LOGIN_DOMAIN    = "stark"
+SESSION_FILE    = HERE / "cloud_session.json"   # saved Portico/Entra session (gitignored)
+APP_HOST        = "atentcloud.tylerapp.com"     # URL back on this host == logged in
 
-# Nav label (drawer) — targets the span.left-align-label, which disambiguates the
-# menu item from same-named labels elsewhere on the dashboard.
-def NAV(label: str) -> str:
-    return f"xpath=//span[contains(@class,'left-align-label') and normalize-space(.)='{label}']"
-
-# Confirmed CAST selectors (see docstring). Dialog selectors marked (CONFIRM) are
-# best-guess pending a first watched CAST create — --diag dumps the dialog.
+# Selectors. Login + dashboard nav confirmed on Tyler CLOUD 2026-09-21/22. The
+# transaction internals (PIN box, Simple Copy, CloneParcel dialog) are the same
+# classic Maintain/Transact.aspx as the old self-hosted UI — dry-run confirmed the
+# PIN box + Simple Copy button; the dialog is exercised on the first real create.
 SEL = {
-    "login_user":   "#wrapperusername",
-    "login_pass":   "#wrapperpassword",
-    "login_domain": "#wrapperdomain",
-    "menu_button":  ["mat-icon:has-text('menu')", "button:has(mat-icon:has-text('menu'))"],
-    "drawer_ready": None,   # set at runtime to NAV('Administration')
+    # Cloud login: Tyler Portico (identifier-first) -> Microsoft Entra ID.
+    # Captured 2026-09-21 off the live Portico/Microsoft pages (see scratchpad dumps).
+    "portico_user":     "#Input_Username",
+    "portico_remember": "#Input_RememberMe",
+    "portico_next":     ["button[name='Input.Button'][value='login']",
+                         "xpath=//button[normalize-space(.)='Next']", "button[type=submit]"],
+    "ms_pass":          ["#i0118", "input[name='passwd']", "input[type=password]"],
+    "ms_submit":        ["#idSIButton9", "input[type=submit]", "button[type=submit]"],
+    # Cloud dashboard is Tyler Forge (was Angular Material). The top-left HAMBURGER
+    # (forge-app-bar-menu-button, tooltip "Menu") opens the left nav drawer. NOTE:
+    # the "apps" icon is a separate, empty "App Launcher" — NOT the nav. Transaction
+    # items have stable ids wm_dashboardMenu_subMenu_shell_transaction_button<Name>.
+    "menu_button":  ["forge-app-bar-menu-button",
+                     "forge-app-bar-menu-button forge-icon-button",
+                     "forge-icon-button[theme='app-bar']",
+                     "mat-icon:has-text('menu')"],
+    "multi_use":    ["#wm_dashboardMenu_subMenu_shell_transaction_buttonMulti-Use",
+                     "xpath=//button[normalize-space(.)='Multi-Use']"],
+    # The drawer's 'Transaction' accordion header (SINGULAR; no stable id — by text).
+    # Expanding it reveals the Multi-Use sub-button. Click it -> opens a NEW window.
+    "txn_expand":   ["xpath=//button[contains(@class,'left-align-label') and normalize-space(.)='Transaction']"],
     "pin_input":    "#txtMaskedPin_seg0",
     # Toolbar Simple Copy: rendered id from <CLIENT_ID>, JS handler from <ONCLICK>CloneParcel()>.
     "simple_copy":  "#btnSimpleCopy",
@@ -144,10 +171,12 @@ def build_worklist(week_folder: Path, date_str: str) -> list:
 # ── Step 2: iasWorld automation (Playwright) ───────────────────────────────────
 
 def _base_url(env: str) -> str:
-    key = "IASWORLD_PROD_URL" if env == "prod" else "IASWORLD_CAST_URL"
-    url = getattr(credentials, key, None)
+    # Cloud is a single production environment now (was self-hosted CAST/PROD).
+    # Point IASWORLD_URL at the cloud app home; unauthenticated it redirects to Portico.
+    url = (getattr(credentials, "IASWORLD_URL", None)
+           or getattr(credentials, "IASWORLD_PROD_URL", None))
     if not url:
-        print(f"ERROR: {key} not set in credentials.py")
+        print("ERROR: IASWORLD_URL not set in credentials.py")
         sys.exit(1)
     return url
 
@@ -173,86 +202,209 @@ def _click_any(pg, selectors, timeout=4000, force=False):
     return False
 
 
-def login(page, login_url: str, diag: bool) -> bool:
-    print("  Logging in to iasWorld...")
-    page.goto(login_url, wait_until="domcontentloaded", timeout=45000)
-    page.wait_for_timeout(5000)
-    if diag:
-        _dump(page, "login")
+def _fill_any(pg, selectors, value, timeout=8000) -> bool:
+    for sel in (selectors if isinstance(selectors, list) else [selectors]):
+        try:
+            pg.fill(sel, value, timeout=timeout); return True
+        except Exception:
+            continue
+    return False
+
+
+def _on_app(page) -> bool:
+    """True only when the browser is actually ON the cloud app host — checks the
+    URL's hostname, NOT a substring (the Portico login URL embeds the app host in
+    its redirect_uri query param, which would false-match a naive `in` test)."""
     try:
-        page.fill(SEL["login_user"], credentials.IASWORLD_USERNAME, timeout=15000)
-        page.fill(SEL["login_pass"], credentials.IASWORLD_PASSWORD, timeout=8000)
-        try:
-            if not (page.input_value(SEL["login_domain"]) or "").strip():
-                page.fill(SEL["login_domain"], LOGIN_DOMAIN)
-        except Exception:
-            pass
+        host = (urlsplit(page.url or "").hostname or "").lower()
     except Exception:
-        _dump(page, "login_fields_missing")
-        print("  ✗ Login fields not found."); return False
-    # click the VISIBLE 'SIGN IN' button (a hidden ASP #submit shares the text)
-    clicked = False
-    for btn in page.query_selector_all("button"):
+        host = ""
+    return host.endswith(APP_HOST)
+
+
+def _text_present(page, text) -> bool:
+    try:
+        return page.locator(f"xpath=//*[contains(normalize-space(.), {text!r})]").count() > 0
+    except Exception:
+        return False
+
+
+def _looks_like_verification(page) -> bool:
+    """Heuristic: are we stuck on a Microsoft MFA / device / 'more info' interstitial?"""
+    if "login.microsoftonline.com" not in (page.url or ""):
+        return False
+    for t in ("Approve", "verify your identity", "Enter code", "We texted",
+              "authenticator", "More information required", "Verify your identity"):
+        if _text_present(page, t):
+            return True
+    return False
+
+
+def login(page, login_url: str, diag: bool, manual: bool = False) -> bool:
+    """Cloud login: Tyler Portico (username) -> Microsoft Entra ID (password) ->
+    'Stay signed in?' -> back on the app. Returns True once we land on APP_HOST.
+    A reused session (loaded via storage_state) lands there immediately with no form.
+    """
+    print("  Logging in (Tyler Portico -> Microsoft)...")
+    page.goto(login_url, wait_until="domcontentloaded", timeout=60000)
+    page.wait_for_timeout(3500)
+
+    if _on_app(page):
+        print("  ✓ Existing session reused"); return True
+    if diag:
+        _dump(page, "login_portico")
+
+    # ── Manual mode: user completes the whole sign-in by hand (MFA, etc.) ──
+    if manual:
+        print("\n  >>> MANUAL LOGIN: complete the sign-in in the browser window")
+        print("      (username, password, any MFA, 'Stay signed in?').")
+        input("      When iasWorld has loaded, press Enter here... ")
+        for _ in range(15):
+            if _on_app(page):
+                print("  ✓ Logged in (manual)"); return True
+            page.wait_for_timeout(1000)
+        _dump(page, "login_manual_failed")
+        print("  ✗ Still not on the app after manual login."); return False
+
+    # ── Tyler Portico: username (identifier-first) ──
+    try:
+        page.wait_for_selector(SEL["portico_user"], timeout=25000)
+        page.fill(SEL["portico_user"], credentials.IASWORLD_USERNAME, timeout=10000)
         try:
-            if "SIGN IN" in (btn.inner_text() or "").upper() and btn.is_visible():
-                btn.click(); clicked = True; break
+            cb = page.query_selector(SEL["portico_remember"])
+            if cb and not cb.is_checked():
+                cb.check()
         except Exception:
             pass
-    if not clicked:
-        print("  ✗ SIGN IN button not found."); return False
-    for _ in range(30):
+        if not _click_any(page, SEL["portico_next"], timeout=8000):
+            _dump(page, "login_no_next"); print("  ✗ Portico 'Next' button not found."); return False
+    except Exception:
+        _dump(page, "login_portico_fail")
+        print("  ✗ Portico username field not found."); return False
+
+    # ── Microsoft Entra ID: password ──
+    try:
+        page.wait_for_selector(SEL["ms_pass"][0], timeout=25000)
+    except Exception:
+        _dump(page, "login_ms")   # not the password page: MFA, device reg, or account picker
+        if _looks_like_verification(page):
+            print("  ✗ Microsoft is requiring extra verification (MFA/device).")
+            print("     Re-run once with:  python create_future_year.py --manual-login")
+        else:
+            print("  ✗ Microsoft password page not found (see fy_login_ms.*).")
+        return False
+    if not _fill_any(page, SEL["ms_pass"], credentials.IASWORLD_PASSWORD):
+        _dump(page, "login_ms_pass"); print("  ✗ Could not fill Microsoft password."); return False
+    _click_any(page, SEL["ms_submit"], timeout=8000)
+
+    # ── 'Stay signed in?' (KMSI) — click Yes so the session persists ──
+    page.wait_for_timeout(3500)
+    if "login.microsoftonline.com" in (page.url or "") and _text_present(page, "Stay signed in"):
+        _click_any(page, SEL["ms_submit"], timeout=6000)
+
+    # ── wait to land back on the cloud app ──
+    for _ in range(45):
         page.wait_for_timeout(1000)
-        if "login.aspx" not in page.url.lower():
+        if _on_app(page):
             print("  ✓ Logged in"); return True
+        if _looks_like_verification(page):
+            _dump(page, "login_mfa")
+            print("  ✗ Microsoft is requiring extra verification (MFA/device).")
+            print("     Re-run once with:  python create_future_year.py --manual-login")
+            return False
     _dump(page, "login_failed")
-    print("  ✗ Still on login page — check IASWORLD_USERNAME/PASSWORD."); return False
+    print("  ✗ Never returned to the cloud app — see fy_login_failed.*"); return False
+
+
+def _launch_and_verify(page, ctx, target, diag, tag):
+    """Click a Multi-Use target; it may open a NEW window or navigate in place.
+    Return the page with the classic Transact.aspx PIN box, or None."""
+    txn = None
+    try:
+        with ctx.expect_page(timeout=6000) as pinfo:
+            _click_any(page, target, timeout=6000, force=True)
+        txn = pinfo.value
+    except Exception:
+        txn = page
+    txn.wait_for_timeout(5000)
+    try:
+        txn.wait_for_selector(SEL["pin_input"], timeout=12000)
+        return txn
+    except Exception:
+        _dump(txn if txn else page, f"no_pin_box_{tag}")
+        if txn is not None and txn is not page:
+            try: txn.close()
+            except Exception: pass
+        return None
+
+
+def explore(ctx, page):
+    """Interactive capture: you open a Multi-Use transaction + load a parcel by
+    hand, then this enumerates every open window/frame and the input/button ids so
+    we can wire the cloud transaction UI without guessing."""
+    import json
+    print("\n  >>> EXPLORE MODE")
+    print("      In the browser window: open a MULTI-USE transaction and load ANY")
+    print("      parcel (type a PIN + Enter) so a parcel record is on screen.")
+    input("      Then come back here and press Enter to capture... ")
+    INV = """() => {
+      const pick = el => { const a = {};
+        for (const n of ['id','name','type','placeholder','aria-label','title'])
+          { const v = el.getAttribute && el.getAttribute(n); if (v) a[n] = v; }
+        return { tag: el.tagName.toLowerCase(), text: (el.innerText||'').trim().slice(0,40),
+                 attrs: a, vis: !!(el.offsetWidth || el.offsetHeight) }; };
+      return [...document.querySelectorAll('input,button,select,a[role=button],[onclick]')].map(pick);
+    }"""
+    keys = ('pin', 'clone', 'simplecopy', 'maskedpin', 'selyear', 'btnok', 'copy')
+    for i, pg in enumerate(ctx.pages):
+        print(f"\n  PAGE {i}: {(pg.url or '').split('?')[0]}")
+        try: pg.screenshot(path=str(HERE / f"fy_explore_p{i}.png"), full_page=True)
+        except Exception: pass
+        for j, fr in enumerate(pg.frames):
+            url = (fr.url or "").split("?")[0]
+            try: els = fr.evaluate(INV)
+            except Exception: els = []
+            hits = [e for e in els if any(k in json.dumps(e).lower() for k in keys)]
+            print(f"    frame {j}: {url}  (elements={len(els)}, key-hits={len(hits)})")
+            for e in hits[:25]:
+                print(f"        <{e['tag']}> {json.dumps(e['attrs'])} {e['text']!r} {'vis' if e['vis'] else 'hidden'}")
+            try: (HERE / f"fy_explore_p{i}_f{j}.html").write_text(fr.content(), encoding="utf-8")
+            except Exception: pass
+    print("\n  Saved fy_explore_*.png/.html — paste the key-hit lines back.")
 
 
 def open_transaction(page, ctx, diag: bool):
-    """Open the Multi-Use transaction; return its (new) page/window. Reused for all PINs."""
+    """Open the Multi-Use transaction; return its page/window. Reused for all PINs.
+    Cloud path (confirmed with Jason 2026-09-22): hamburger (top-left) -> expand the
+    'Transaction' accordion -> click 'Multi-Use', which opens a NEW window running
+    the classic Maintain/Transact.aspx."""
     print("  Opening Multi-Use transaction...")
+
+    # 1) open the left nav drawer via the hamburger
     opened = False
     for _ in range(3):
-        _click_any(page, SEL["menu_button"], timeout=2500)
+        _click_any(page, SEL["menu_button"], timeout=3000)
         try:
-            page.wait_for_selector(NAV("Administration"), state="visible", timeout=4000)
+            page.wait_for_selector(SEL["txn_expand"][0], state="visible", timeout=4000)
             opened = True; break
         except Exception:
-            page.wait_for_timeout(800)
+            page.wait_for_timeout(700)
     if not opened:
-        _dump(page, "no_drawer"); print("  ✗ Could not open the navigation drawer."); return None
+        _dump(page, "no_drawer")
+        print("  ✗ Nav drawer didn't open from the hamburger (fy_no_drawer.*)."); return None
 
-    def _nav_click(label, timeout=6000):
-        loc = page.locator(NAV(label)).first
-        try:
-            loc.scroll_into_view_if_needed(timeout=4000)
-        except Exception:
-            pass
-        try:
-            loc.click(timeout=timeout)
-        except Exception:
-            loc.click(force=True, timeout=timeout)
-
-    _nav_click("Transactions")                    # expand the Transactions section
-    page.wait_for_timeout(1500)
+    # 2) expand the 'Transaction' accordion to reveal Multi-Use
+    _click_any(page, SEL["txn_expand"], timeout=4000)
     try:
-        page.wait_for_selector(NAV("Multi-Use"), state="visible", timeout=5000)
+        page.wait_for_selector(SEL["multi_use"][0], state="visible", timeout=5000)
     except Exception:
         pass
-    txn = None
-    try:
-        with ctx.expect_page(timeout=10000) as pinfo:
-            _nav_click("Multi-Use")               # opens the transaction window
-        txn = pinfo.value
-    except Exception:
-        txn = page                                 # some configs open in-place
-    txn.wait_for_timeout(6000)
-    # confirm we're in the CAMA_COMBINED transaction with the PIN box present
-    try:
-        txn.wait_for_selector(SEL["pin_input"], timeout=15000)
-    except Exception:
-        _dump(txn, "no_pin_box")
-        print("  ✗ Transaction window has no Parcel ID box (fy_no_pin_box.*)."); return None
+
+    # 3) click Multi-Use — opens a NEW window (_launch_and_verify catches it)
+    txn = _launch_and_verify(page, ctx, SEL["multi_use"], diag, "drawer")
+    if txn is None:
+        print("  ✗ Opened Multi-Use but found no PIN box (see fy_no_pin_box_drawer.*).")
+        return None
     if diag:
         _dump(txn, "transaction")
     print(f"  ✓ Multi-Use open ({txn.url.split('?')[0]})")
@@ -412,7 +564,8 @@ def simple_copy(txn, year: int, diag: bool):
     return "created", detail or "created"
 
 
-def run(pins, env, year, dry_run, diag, headless, limit, log_path):
+def run(pins, env, year, dry_run, diag, headless, limit, log_path,
+        manual=False, relogin=False, login_only=False, explore_mode=False):
     from playwright.sync_api import sync_playwright
     login_url = _base_url(env)
     if limit:
@@ -420,17 +573,36 @@ def run(pins, env, year, dry_run, diag, headless, limit, log_path):
     rows, counts = [], {}
     stamp = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    use_session = SESSION_FILE.exists() and not relogin and not manual
+    if use_session:
+        print(f"  Reusing saved session: {SESSION_FILE.name} (--relogin to ignore)")
+
     with sync_playwright() as pw:
         browser = pw.chromium.launch(
             headless=headless,
             args=["--start-maximized", "--disable-blink-features=AutomationControlled"],
         )
         ctx = browser.new_context(viewport={"width": 1400, "height": 900},
-                                  ignore_https_errors=True, accept_downloads=True)
+                                  ignore_https_errors=True, accept_downloads=True,
+                                  storage_state=str(SESSION_FILE) if use_session else None)
         page = ctx.new_page()
         try:
-            if not login(page, login_url, diag):
+            if not login(page, login_url, diag, manual=manual):
                 sys.exit(1)
+            # Persist the (possibly refreshed) session cookie for next week's run.
+            try:
+                ctx.storage_state(path=str(SESSION_FILE))
+                print(f"  Session saved: {SESSION_FILE.name}")
+            except Exception as e:
+                print(f"  (note: could not save session: {e})")
+            if login_only:
+                page.wait_for_timeout(2000)
+                _dump(page, "dashboard")   # capture the cloud landing page for the nav rewire
+                print("  ✓ login-only: logged in and dashboard dumped (fy_dashboard.*)")
+                return
+            if explore_mode:
+                explore(ctx, page)
+                return
             txn = open_transaction(page, ctx, diag)
             if txn is None:
                 sys.exit(1)
@@ -483,12 +655,21 @@ def run(pins, env, year, dry_run, diag, headless, limit, log_path):
 
 def main():
     ap = argparse.ArgumentParser(description="Create iasWorld future-year records for portal parcels.")
-    ap.add_argument("--env", choices=["cast", "prod"], default="cast")
+    ap.add_argument("--env", choices=["cast", "prod"], default="prod",
+                    help="vestigial — cloud is a single prod env; kept for compatibility")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--diag", action="store_true")
     ap.add_argument("--year", type=int, default=TARGET_TAX_YEAR)
     ap.add_argument("--week", default=None)
     ap.add_argument("--headless", action="store_true")
+    ap.add_argument("--manual-login", action="store_true",
+                    help="complete the sign-in by hand once (MFA/device), then save the session")
+    ap.add_argument("--relogin", action="store_true",
+                    help="ignore any saved session and sign in fresh")
+    ap.add_argument("--login-only", action="store_true",
+                    help="log in, save the session, dump the dashboard, then stop (tests login alone)")
+    ap.add_argument("--explore", action="store_true",
+                    help="log in, pause for you to open a transaction by hand, then dump the page/frame element inventory")
     ap.add_argument("--limit", type=int, default=None, help="only process the first N parcels")
     ap.add_argument("--list-only", action="store_true")
     args = ap.parse_args()
@@ -511,14 +692,18 @@ def main():
             print("   ", p)
         return
 
-    if args.env == "prod" and not args.dry_run:
+    if not args.dry_run and not args.login_only and not args.explore:   # real runs create records
         print(f"\n  *** PRODUCTION: will create {args.year} records for "
               f"{len(pins) if not args.limit else min(args.limit, len(pins))} parcels. ***")
         if input("  Type YES to proceed: ").strip() != "YES":
             print("  Aborted."); return
 
+    # Manual login and explore need a visible browser to interact with.
+    headless = args.headless and not args.manual_login and not args.explore
     log_path = week_folder / f"future_year_log_{date_str}.csv"
-    run(pins, args.env, args.year, args.dry_run, args.diag, args.headless, args.limit, log_path)
+    run(pins, args.env, args.year, args.dry_run, args.diag, headless, args.limit, log_path,
+        manual=args.manual_login, relogin=args.relogin, login_only=args.login_only,
+        explore_mode=args.explore)
 
 
 if __name__ == "__main__":

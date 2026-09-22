@@ -20,11 +20,13 @@ MLS_USERNAME = "YOUR_MLS_MEMBER_ID"
 MLS_PASSWORD = "YOUR_MLS_PASSWORD"
 
 # ── iasWorld web UI (future-year record creation via Playwright) ──────────────
-# Two environments: CAST for testing, PROD for real record creation.
-IASWORLD_CAST_URL = "https://CAST_HOST/iasworld/main/Login.aspx"
-IASWORLD_PROD_URL = "https://PROD_HOST/iasworld/main/Login.aspx"
-IASWORLD_USERNAME = "YOUR_IASWORLD_USERNAME"
-IASWORLD_PASSWORD = "YOUR_IASWORLD_PASSWORD"
+# Tyler CLOUD (Sept 2026): a single production environment. IASWORLD_URL is the
+# cloud app home; unauthenticated it redirects to Tyler Portico, which federates
+# to Microsoft Entra ID. So USERNAME is your Microsoft/Portico sign-in EMAIL and
+# PASSWORD is your Microsoft password (NOT the old "stark\" domain login).
+IASWORLD_URL      = "https://YOUR_TENANT.atentcloud.tylerapp.com/app/home#/dashboard"
+IASWORLD_USERNAME = "you@YOUR_COUNTY.gov"
+IASWORLD_PASSWORD = "YOUR_MICROSOFT_PASSWORD"
 
 # ── Anthropic (portal grade/condition suggestions) ────────────────────────────
 # Only used by local tooling. The portal itself NEVER embeds a key — staff enter

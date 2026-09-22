@@ -42,6 +42,7 @@ ZillowPhotos/
 Automation Domination/*
 !Automation Domination/*.py
 Automation Domination/credentials.py
+Automation Domination/cloud_session.json   # saved Portico/Entra auth cookies — NEVER commit
 !ZillowPhotos/
 ZillowPhotos/*
 !ZillowPhotos/*.py
