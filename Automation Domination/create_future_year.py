@@ -582,12 +582,25 @@ def run(pins, env, year, dry_run, diag, headless, limit, log_path,
             headless=headless,
             args=["--start-maximized", "--disable-blink-features=AutomationControlled"],
         )
-        ctx = browser.new_context(viewport={"width": 1400, "height": 900},
-                                  ignore_https_errors=True, accept_downloads=True,
-                                  storage_state=str(SESSION_FILE) if use_session else None)
+        def _ctx(with_session):
+            return browser.new_context(viewport={"width": 1400, "height": 900},
+                                       ignore_https_errors=True, accept_downloads=True,
+                                       storage_state=str(SESSION_FILE) if with_session else None)
+        ctx = _ctx(use_session)
         page = ctx.new_page()
         try:
-            if not login(page, login_url, diag, manual=manual):
+            ok = login(page, login_url, diag, manual=manual)
+            if not ok and use_session:
+                # An EXPIRED saved session doesn't land on the normal Portico
+                # username form (stale cookies → a different page), so the scripted
+                # login can't find #Input_Username. A cold login works — fall back to
+                # one automatically instead of needing --relogin. (2026-10-12)
+                print("  Saved session expired — retrying with a fresh login...")
+                ctx.close()
+                ctx = _ctx(False)
+                page = ctx.new_page()
+                ok = login(page, login_url, diag, manual=manual)
+            if not ok:
                 sys.exit(1)
             # Persist the (possibly refreshed) session cookie for next week's run.
             try:
