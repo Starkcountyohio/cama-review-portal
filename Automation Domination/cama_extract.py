@@ -5,6 +5,7 @@ Reads the SQL script, injects the calculated date range, executes the query.
 
 import re
 import sys
+import time
 import oracledb
 import pandas as pd
 from pathlib import Path
@@ -79,10 +80,21 @@ def extract_cama(output_path: Path, run_date=None, start_date=None, end_date=Non
 
     # ── Connect and execute ────────────────────────────────────────────────────
     print(f"  Connecting to Oracle ({ORACLE_DSN})...")
-    try:
-        conn = oracledb.connect(user=ORACLE_USER, password=ORACLE_PASSWORD, dsn=ORACLE_DSN)
-    except oracledb.Error as e:
-        print(f"  ✗ Oracle connection failed: {e}")
+    # The Tyler cloud DB intermittently fails the FIRST connect (DPY-6005 /
+    # cert "Missing Authority Key Identifier"); an immediate retry succeeds.
+    # tcp_connect_timeout stops a network stall from hanging the run silently.
+    conn = None
+    for attempt in range(1, 5):
+        try:
+            conn = oracledb.connect(user=ORACLE_USER, password=ORACLE_PASSWORD,
+                                    dsn=ORACLE_DSN, tcp_connect_timeout=20)
+            break
+        except oracledb.Error as e:
+            print(f"  ⚠  Oracle connect attempt {attempt} failed: {str(e).splitlines()[0]}")
+            if attempt < 4:
+                time.sleep(3)
+    if conn is None:
+        print("  ✗ Oracle connection failed after 4 attempts")
         sys.exit(1)
 
     try:
