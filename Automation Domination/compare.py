@@ -211,6 +211,64 @@ def _build_batch_excel(df_missing, batch_size=35) -> bytes:
 
 # ── SaleTab / MassEntrance generation ────────────────────────────────────────
 
+def _xlsx_inline_to_shared_strings(path):
+    """Rewrite an openpyxl-written .xlsx so its text cells use a shared-string
+    table instead of inline strings (t="inlineStr").
+
+    The Tyler CLOUD Mass Update uploader reads only shared strings: on the
+    inline-string file openpyxl produces, every header cell looks empty and the
+    upload fails with "Spreadsheet column name cannot be null, empty, or consist
+    only of white-space characters" (2026-10-12). Excel always writes shared
+    strings, which is why files opened + re-saved in Excel uploaded fine.
+    """
+    import zipfile
+    from xml.sax.saxutils import escape
+    path = Path(path)
+    with zipfile.ZipFile(path) as z:
+        files = {n: z.read(n) for n in z.namelist()}
+
+    strings, index, refs = [], {}, [0]
+
+    def _shared(m):
+        attrs, text = m.group(1), m.group(2)
+        refs[0] += 1
+        if text not in index:
+            index[text] = len(strings)
+            strings.append(text)
+        return f'<c{attrs} t="s"><v>{index[text]}</v></c>'
+
+    cell_re = re.compile(r'<c([^>]*?) t="inlineStr"><is><t(?: [^>]*)?>(.*?)</t></is></c>', re.S)
+    for name in [n for n in files if n.startswith("xl/worksheets/sheet")]:
+        files[name] = cell_re.sub(_shared, files[name].decode("utf-8")).encode("utf-8")
+    if not strings:
+        return
+
+    # Text captured above is already XML-escaped, so it goes back in verbatim.
+    files["xl/sharedStrings.xml"] = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+        f'count="{refs[0]}" uniqueCount="{len(strings)}">'
+        + "".join(f'<si><t xml:space="preserve">{s}</t></si>' for s in strings)
+        + "</sst>").encode("utf-8")
+    ct = files["[Content_Types].xml"].decode("utf-8")
+    if "sharedStrings.xml" not in ct:
+        ct = ct.replace("</Types>",
+            '<Override PartName="/xl/sharedStrings.xml" ContentType="application/'
+            'vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/></Types>')
+        files["[Content_Types].xml"] = ct.encode("utf-8")
+    rels = files["xl/_rels/workbook.xml.rels"].decode("utf-8")
+    if "sharedStrings.xml" not in rels:
+        rels = rels.replace("</Relationships>",
+            '<Relationship Id="rIdSST" Type="http://schemas.openxmlformats.org/'
+            'officeDocument/2006/relationships/sharedStrings" '
+            'Target="sharedStrings.xml"/></Relationships>')
+        files["xl/_rels/workbook.xml.rels"] = rels.encode("utf-8")
+
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, data in files.items():
+            z.writestr(name, data)
+
+
 def _generate_mass_update_files(combined_df, output_folder, date_str):
     """
     Generate SALETAB_MassUpdate_MMDDYY.xlsx and MassEntrance_MMDDYY.csv
@@ -328,6 +386,7 @@ def _generate_mass_update_files(combined_df, output_folder, date_str):
 
     with pd.ExcelWriter(saletab_path, engine="openpyxl") as writer:
         saletab_df.to_excel(writer, index=False, sheet_name="Sheet1")
+    _xlsx_inline_to_shared_strings(saletab_path)   # cloud Mass Update needs this
 
     entrance_df.to_csv(entrance_path, index=False)
 
