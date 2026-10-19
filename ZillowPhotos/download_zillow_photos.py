@@ -563,7 +563,7 @@ class ZillowDownloader:
                 else:
                     results.append({'Parcel_ID': parcel_id, 'Photos': 0, 'Status': 'Failed'})
 
-                time.sleep(random.uniform(5, 10))  # Polite delay
+                time.sleep(random.uniform(30, 60))  # Polite delay between parcels (was 5-10s; slower = lighter load on Zillow)
 
         except KeyboardInterrupt:
             print("\n\n⚠️  Interrupted by user")
