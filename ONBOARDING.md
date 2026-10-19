@@ -140,7 +140,9 @@ Ignore these known non-issues:
 Zillow sometimes returns a **realtor headshot** or wrong house instead of an
 exterior. For each bad one, look up its MLS number (match the parcel ID against
 `value_mismatches_*.xlsx` / `perfect_matches_*.xlsx`, column `Listing_Number`),
-pull the correct exterior, and save it as `<parcel>-1.jpg`.
+pull the correct exterior, and save it as `<parcel>-1.jpg`. The extension must be
+**`.jpg`** — browsers often save MLS photos as `.jpeg`, and the pipeline globs
+`*.jpg` only, so a `.jpeg` is silently ignored (W42 and W43). Rename it.
 
 **Save each swap ONCE, into either folder** — as of W34 the build syncs them:
 - `MLSvsCAMA/<week>/Photos_New/` → feeds the iasWorld photo-upload CSV
@@ -303,6 +305,8 @@ Gotchas (both learned the hard way):
 - Pipe the confirmation with **`echo YES | python …` in Bash**, NOT PowerShell's
   `Write-Output "YES" | python …` — the PowerShell pipe doesn't reach `input()`
   and the script aborts (non-destructive, but nothing happens).
+- Typing at the prompt yourself? It must be **`YES` in capitals** — lowercase
+  `yes` prints `Aborted.` and does nothing (W43).
 - Piped stdout is **block-buffered** — a background run shows no interim progress
   until it exits. The log CSV is written all at once at the end. A quiet output
   file is NOT a hang.
@@ -310,14 +314,22 @@ Gotchas (both learned the hard way):
   logs them as `exists`.
 
 ### 6. Manual iasWorld steps (on the 2027 records)
-1. **Sale Tab Mass Update** — `SALETAB_MassUpdate_MMDDYY.xlsx`
-2. **MassEntrance** — `MassEntranceMMDDYY.csv`
-3. **Photo upload** — Document Loader with `Photo Upload M-D-YYYY.csv`
-   (`Taxyr=2027`)
+As of 2026-W43 (Oct 19) there is **one** weekly manual step:
 
-Sale Tab and MassEntrance have no tax-year column, so they attach to 2027
-automatically. The photo-upload CSV is the only year-sensitive file — confirm
-`Taxyr=2027` (step 3 handles this).
+1. **Sale Tab Mass Update** — `SALETAB_MassUpdate_MMDDYY.xlsx`. No tax-year
+   column, so it attaches to 2027 automatically.
+
+The pipeline still writes two other files each week; neither is loaded by the
+operator right now:
+
+- **MassEntrance** (`MassEntranceMMDDYY.csv`) — **not loaded.** Appraisers now
+  enter it on each parcel as they review it. The file is still generated and is
+  harmless to leave in the week folder.
+- **Photo upload** (`Photo Upload M-D-YYYY.csv`, `Taxyr=2027`) — **parked.** The
+  desktop Document Loader has no Tyler cloud equivalent, and Tyler has not yet
+  supplied a bulk-upload tool. Keep generating the CSV (step 3) and leave it in
+  the week folder; it is the only year-sensitive file, so confirm `Taxyr=2027`
+  when a loader does arrive. Photos are not hand-uploaded parcel by parcel.
 
 ---
 
