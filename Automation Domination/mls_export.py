@@ -10,7 +10,7 @@ import pandas as pd
 from pathlib import Path
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
-from credentials import MLS_USERNAME, MLS_PASSWORD
+from credentials import MLS_USERNAME, MLS_PASSWORD, MLS_EXPORT_NAME
 
 MLS_URL = "https://now.mlsmatrix.com"
 
@@ -269,23 +269,17 @@ def export_mls(csv_path: Path, xlsx_path: Path) -> pd.DataFrame:
                 sys.exit(1)
             _wait(page, 3000)
 
-            # ── Step 8: Select C3 format ───────────────────────────────────────
-            print("  Step 8: Selecting C3 format...")
+            # ── Step 8: Select the operator's custom export ────────────────────
+            # Custom exports live in each MLS account, so the name comes from
+            # credentials.py. Its 36 columns must match ONBOARDING.md exactly.
+            print(f"  Step 8: Selecting '{MLS_EXPORT_NAME}' export format...")
             try:
-                page.select_option("#m_ddExport", value="ud11476", timeout=8000)
-                print("    ✓ C3 format selected (by value)")
+                page.select_option("#m_ddExport", label=MLS_EXPORT_NAME, timeout=8000)
+                print(f"    ✓ {MLS_EXPORT_NAME} format selected")
             except PWTimeout:
-                # Custom exports are per-account: "C3" is Jason's, "Portal Builder" is Bethany's
-                for label in ("C3", "Portal Builder"):
-                    try:
-                        page.select_option("#m_ddExport", label=label, timeout=5000)
-                        print(f"    ✓ {label} format selected (by label)")
-                        break
-                    except PWTimeout:
-                        pass
-                else:
-                    print("  ✗ Could not select C3 / Portal Builder format")
-                    sys.exit(1)
+                print(f"  ✗ No custom export named '{MLS_EXPORT_NAME}' in this MLS account "
+                      f"— create it, or fix MLS_EXPORT_NAME in credentials.py")
+                sys.exit(1)
             _wait(page, 1000)
 
             # ── Step 9: Click final Export and capture download ────────────────

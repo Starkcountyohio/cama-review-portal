@@ -8,6 +8,15 @@ Placeholders only in this file. It IS committed to a PUBLIC repo, so never paste
 real host, username, password, or API key here.
 """
 
+# ── Operator (whoever runs the weekly pipeline on this machine) ───────────────
+# Stamped on SALETAB (USER1) and MassEntrance (appraiser). No fallback in the
+# code — a missing value stops the run rather than stamping someone else.
+APPRAISER_INITIALS  = "ABC"
+APPRAISER_FULL_NAME = "First Last"
+# Name of YOUR custom export in MLS Matrix (custom exports are per account).
+# Its columns must match the list in ONBOARDING.md.
+MLS_EXPORT_NAME = "Portal Builder"
+
 # ── Oracle (iasWorld CAMA database) ───────────────────────────────────────────
 # DSN format is host:port/service_name — get the real values from the internal
 # setup notes, not from this file.

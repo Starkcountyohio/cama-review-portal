@@ -14,7 +14,7 @@ from the project root: `Portal Builder/`.
 
 - **Live portal:** https://starkcountyohio.github.io/cama-review-portal/review_portal.html
 - **Repo:** https://github.com/Starkcountyohio/cama-review-portal (public — never commit keys)
-- **Cadence:** Jason runs this Monday. Appraisers review Tue–Fri. Field-visit flags assigned the following Tuesday.
+- **Cadence:** the operator (Bethany Miller as of 2026-W44; Jason no longer runs it) runs this Monday. Appraisers review Tue–Fri. Field-visit flags assigned the following Tuesday.
 
 ---
 
@@ -27,6 +27,51 @@ from the project root: `Portal Builder/`.
   If step 1 fails, check credentials and the database service before assuming a
   connectivity problem — that is rarely the cause on a configured build machine.
 - Python 3 with openpyxl, Pillow, pandas, oracledb, playwright.
+- Node.js, so `check_portal.py` can run its Babel parse (skipped without it).
+
+### New operator setup (first run on your own machine)
+Learned on the 2026-W44 handover. Every operator uses **their own** accounts —
+nothing of another operator's should be on your machine.
+
+1. **`credentials.py`** — copy from `credentials.example.py` and fill in *your*
+   Oracle, MLS, iasWorld (Microsoft sign-in) and Anthropic values, plus the
+   operator block: `APPRAISER_INITIALS`, `APPRAISER_FULL_NAME` (stamped on every
+   SALETAB/MassEntrance row) and `MLS_EXPORT_NAME`. A missing value stops the
+   run on purpose. Open it with
+   `notepad "<portal-root>\Automation Domination\credentials.py"` —
+   double-clicking a `.py` runs it instead of opening it.
+2. **No `cloud_session.json` from anyone else.** It's a saved Tyler/Microsoft
+   login; if one was copied over with the other files, delete it. Run
+   `create_future_year.py` with `--no-save-session` if you don't want yours
+   saved either.
+3. **The CAMA SQL file** (`PROD - IASW.sql…`) is gitignored — copy it by hand.
+4. **MLS custom export.** Exports are per MLS account, so create your own in
+   Matrix with exactly these 36 fields, in order, and put its name in
+   `MLS_EXPORT_NAME`. Names must match exactly — `compare.py` silently skips a
+   comparison field it can't find, which reads as a clean match:
+   Address, City, State Or Province, Postal Code, **Parcel Number**,
+   Additional Parcels Description, Listing #, List Price, Close Price, List Date,
+   Closed Date, Days On Market, Lot Size Acres, Lot Size Area, Lot Size Units,
+   Lot Size Dimensions Source, Lot Size Frontage, Lot Features,
+   Lot Size Dimensions, Architectural Style, **Bedrooms Total**,
+   Fireplaces Total, Stories, **Bathrooms Full**, **Bathrooms Half**,
+   Basement YN, Basement, **Above Grade Finished Area**,
+   Above Grade Finished Area Source, **Below Grade Finished Area**,
+   Below Grade Finished Area Source, Heating, **Cooling**, Year Built,
+   Public Remarks, Buyer Financing. (Bold = compared against CAMA.)
+5. **GitHub push access.** Git must sign in as an account with write access to
+   `Starkcountyohio/cama-review-portal` — a personal account without it gets
+   `403 Permission denied`. To switch:
+   `git credential-manager github logout <account>`, then push and sign in as
+   the right account in the browser window.
+6. **OneDrive:** set the Portal folder to *Always keep on this device* and let
+   it finish syncing. Cloud-only files fail with "cloud operation was not
+   completed" or "Permission denied".
+7. **Shell gotcha:** commands in this guide are typed into PowerShell *without*
+   a leading `!` — the `!` prefix is only for the Claude Code prompt.
+
+The Apps Script `SHARED_API_URL` in `build_portal.py` is **not** per operator —
+all reviewers share one status sheet. Change it only if the sheet is redeployed.
 
 ---
 
@@ -87,6 +132,10 @@ Two summary numbers look alarming and are not:
 ```powershell
 .\run_zillow_photos.bat
 ```
+**Don't close the Zillow browser window** — solve CAPTCHAs in it. Closing it
+doesn't stop the script; every remaining parcel just logs `Not Found`. If
+failures come in a long unbroken run, Zillow is throttling: wait ~30 min, then
+re-run (it skips parcels that already have a `-1.jpg`).
 Runs the downloader on value_mismatches then perfect_matches into `Photos_New`
 (and builds `Photos_New_Portal` + the upload CSV). **Edit the two dates inside
 the .bat each week** — they're hardcoded to one week's paths. Auto-skips parcels

@@ -42,8 +42,10 @@ NUMERIC_TOLERANCE = 0.01
 SKIP_ZERO_VALUES  = True
 
 # ── Appraiser info (used for SaleTab / MassEntrance output) ───────────────────
-APPRAISER_INITIALS  = "BKM"
-APPRAISER_FULL_NAME = "Bethany Miller"
+# Per operator — set in each machine's credentials.py, so whoever runs the week
+# is the one stamped on SALETAB/MassEntrance. No default on purpose: a missing
+# value should stop the run, not stamp someone else's initials.
+from credentials import APPRAISER_INITIALS, APPRAISER_FULL_NAME
 
 ADDRESS_COLUMNS = {
     "address": "Address",
