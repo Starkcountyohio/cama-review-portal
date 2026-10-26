@@ -79,11 +79,11 @@ all reviewers share one status sheet. Change it only if the sheet is redeployed.
 
 There are **two ways** to run it — both do the same 8 steps in the same order:
 
-- **All-in-one (default):** one command, three human gates. Use when Jason runs
+- **All-in-one (default):** one command, three human gates. Use when the operator runs
   the whole thing himself at the keyboard. → **§1–§6 below.**
 - **Split (assisted):** the automated halves are separated from the interactive
   middle, so the data pull and the build can be driven by an assistant (e.g.
-  Claude Code) while Jason handles the Zillow CAPTCHAs and the photo review. Same
+  Claude Code) while the operator handles the Zillow CAPTCHAs and the photo review. Same
   outputs, same order — just cut at the human gates. → **see "Split run" next.**
 
 ### Split run (data-pull / Zillow / build) — assisted mode
@@ -128,7 +128,7 @@ Two summary numbers look alarming and are not:
 > 2026-08-03. A related tell: `⚠ still on login portal after submit (attempt 1)`
 > is the same redirect confusing the login check, not a credentials problem.
 
-**B. Zillow photos — Jason, solves CAPTCHAs:**
+**B. Zillow photos — the operator solves CAPTCHAs:**
 ```powershell
 .\run_zillow_photos.bat
 ```

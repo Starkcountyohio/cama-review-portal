@@ -160,5 +160,8 @@ Stark County appraiser decisions — not just general appraisal theory.
 ## Staff
 - 7 remote staff reviewers
 - Office: Stark County Auditor's Office, Assessment Division, Canton OH
-- Admin/builder: Jason Jeffries (jmjeffri)
+- Original builder: Jason Jeffries (jmjeffri) — built the portal and pipeline; no
+  longer the admin or the weekly operator (handed over 2026-W44)
+- Admin and weekly operator: Bethany Miller (bkmiller), from 2026-W44; two more operators
+  planned — each runs with their own credentials.py (see ONBOARDING.md)
 - CAMA system: iasWorld (Stark County Ohio)
