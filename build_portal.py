@@ -63,7 +63,7 @@ GITHUB_PAGES_BASE = "https://starkcountyohio.github.io/cama-review-portal"
 
 # ── Google Apps Script Web App URL (shared status backend) ────────────────────
 # Already deployed — do not change unless you redeploy the Apps Script
-SHARED_API_URL = "https://script.google.com/macros/s/AKfycbxv8Y30ThaDcxzCymkMxtMm3gTsmAnisF0yhZDI2au2VUNYc9Ypwkevat03tI1KimeP4w/exec"
+SHARED_API_URL = "https://script.google.com/macros/s/AKfycbwSrhfyWd8FzP46Me6S2y4KaFa6floXG0I7jG1zUBPNpkHzR5jZn2FrZmw8RzyeR9GZjg/exec"
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

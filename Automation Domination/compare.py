@@ -42,8 +42,8 @@ NUMERIC_TOLERANCE = 0.01
 SKIP_ZERO_VALUES  = True
 
 # ── Appraiser info (used for SaleTab / MassEntrance output) ───────────────────
-APPRAISER_INITIALS  = "JMJ"
-APPRAISER_FULL_NAME = "Jason Jeffries"
+APPRAISER_INITIALS  = "BKM"
+APPRAISER_FULL_NAME = "Bethany Miller"
 
 ADDRESS_COLUMNS = {
     "address": "Address",

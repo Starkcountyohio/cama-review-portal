@@ -275,11 +275,16 @@ def export_mls(csv_path: Path, xlsx_path: Path) -> pd.DataFrame:
                 page.select_option("#m_ddExport", value="ud11476", timeout=8000)
                 print("    ✓ C3 format selected (by value)")
             except PWTimeout:
-                try:
-                    page.select_option("#m_ddExport", label="C3", timeout=5000)
-                    print("    ✓ C3 format selected (by label)")
-                except PWTimeout:
-                    print("  ✗ Could not select C3 format")
+                # Custom exports are per-account: "C3" is Jason's, "Portal Builder" is Bethany's
+                for label in ("C3", "Portal Builder"):
+                    try:
+                        page.select_option("#m_ddExport", label=label, timeout=5000)
+                        print(f"    ✓ {label} format selected (by label)")
+                        break
+                    except PWTimeout:
+                        pass
+                else:
+                    print("  ✗ Could not select C3 / Portal Builder format")
                     sys.exit(1)
             _wait(page, 1000)
 

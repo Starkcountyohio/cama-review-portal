@@ -531,11 +531,15 @@ class ZillowDownloader:
                 prop_url = self.search_zillow(address, city, state, zipcode)
                 if not prop_url:
                     results.append({'Parcel_ID': parcel_id, 'Photos': 0, 'Status': 'Not Found'})
+                    # Delay on misses too — skipping it fires back-to-back searches once
+                    # Zillow starts refusing, which keeps the block going (W44: 24 misses in a row)
+                    time.sleep(random.uniform(30, 60))
                     continue
 
                 all_urls = self.get_all_photo_urls(prop_url)
                 if not all_urls:
                     results.append({'Parcel_ID': parcel_id, 'Photos': 0, 'Status': 'No Photo'})
+                    time.sleep(random.uniform(30, 60))
                     continue
 
                 # Select photo 1 (front exterior) + photos 5, 6, 7 (interiors).

@@ -565,7 +565,8 @@ def simple_copy(txn, year: int, diag: bool):
 
 
 def run(pins, env, year, dry_run, diag, headless, limit, log_path,
-        manual=False, relogin=False, login_only=False, explore_mode=False):
+        manual=False, relogin=False, login_only=False, explore_mode=False,
+        save_session=True):
     from playwright.sync_api import sync_playwright
     login_url = _base_url(env)
     if limit:
@@ -603,11 +604,14 @@ def run(pins, env, year, dry_run, diag, headless, limit, log_path,
             if not ok:
                 sys.exit(1)
             # Persist the (possibly refreshed) session cookie for next week's run.
-            try:
-                ctx.storage_state(path=str(SESSION_FILE))
-                print(f"  Session saved: {SESSION_FILE.name}")
-            except Exception as e:
-                print(f"  (note: could not save session: {e})")
+            if save_session:
+                try:
+                    ctx.storage_state(path=str(SESSION_FILE))
+                    print(f"  Session saved: {SESSION_FILE.name}")
+                except Exception as e:
+                    print(f"  (note: could not save session: {e})")
+            else:
+                print("  Session not saved (--no-save-session)")
             if login_only:
                 page.wait_for_timeout(2000)
                 _dump(page, "dashboard")   # capture the cloud landing page for the nav rewire
@@ -679,6 +683,8 @@ def main():
                     help="complete the sign-in by hand once (MFA/device), then save the session")
     ap.add_argument("--relogin", action="store_true",
                     help="ignore any saved session and sign in fresh")
+    ap.add_argument("--no-save-session", action="store_true",
+                    help="don't write cloud_session.json after login (log in at every run)")
     ap.add_argument("--login-only", action="store_true",
                     help="log in, save the session, dump the dashboard, then stop (tests login alone)")
     ap.add_argument("--explore", action="store_true",
@@ -716,7 +722,7 @@ def main():
     log_path = week_folder / f"future_year_log_{date_str}.csv"
     run(pins, args.env, args.year, args.dry_run, args.diag, headless, args.limit, log_path,
         manual=args.manual_login, relogin=args.relogin, login_only=args.login_only,
-        explore_mode=args.explore)
+        explore_mode=args.explore, save_session=not args.no_save_session)
 
 
 if __name__ == "__main__":
