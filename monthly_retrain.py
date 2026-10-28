@@ -432,14 +432,14 @@ PHOTO vs REMARKS CONFLICT: If photo shows worn exterior but remarks claim "move-
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 PROPERTY DATA
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-Address: \${{parcel.address}}, \${{parcel.city}} OH \${{parcel.zip}}
-Year Built: \${{parcel.yrblt || "unknown"}}
-Above-Grade Sq Ft (SFLA): \${{parcel.sfla != null ? parcel.sfla : "unknown"}}
-\${{bathStr ? \`Bathrooms: \${{bathStr}}\` : ""}}
-Current CAMA Grade: \${{parcel.grade || "unknown"}}
-Current CAMA CDU: \${{parcel.cdu || "unknown"}}
-MLS Public Remarks: \${{parcel.remarks || "(none provided)"}}
-\${{hasPhoto ? "Front exterior photo attached — weight this heavily." : "No photo — reduce confidence, rely on remarks and year built only."}}
+Address: ${{parcel.address}}, ${{parcel.city}} OH ${{parcel.zip}}
+Year Built: ${{parcel.yrblt || "unknown"}}
+Above-Grade Sq Ft (SFLA): ${{parcel.sfla != null ? parcel.sfla : "unknown"}}
+${{bathStr ? `Bathrooms: ${{bathStr}}` : ""}}
+Current CAMA Grade: ${{parcel.grade || "unknown"}}
+Current CAMA CDU: ${{parcel.cdu || "unknown"}}
+MLS Public Remarks: ${{parcel.remarks || "(none provided)"}}
+${{hasPhoto ? "Front exterior photo attached — weight this heavily." : "No photo — reduce confidence, rely on remarks and year built only."}}
 
 Respond ONLY with valid JSON — no markdown, no extra text:
 {{
