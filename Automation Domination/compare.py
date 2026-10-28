@@ -319,7 +319,7 @@ def _generate_mass_update_files(combined_df, output_folder, date_str):
                 "PARID":   parcel_int,
                 "SALEKEY": salekey_int,
                 "USER11":  listing_number,
-                "SOURCE":  0,
+                "SOURCE":  4,   # 4 = OTHER (was 0 = Appraiser)
                 "SALEVAL": 0,
                 "USER1":   user_initials,
                 "USER2":   today_str,
@@ -353,7 +353,7 @@ def _generate_mass_update_files(combined_df, output_folder, date_str):
                             "PARID":   add_parcel_int,
                             "SALEKEY": add_salekey_int,
                             "USER11":  listing_number,
-                            "SOURCE":  0,
+                            "SOURCE":  4,   # 4 = OTHER (was 0 = Appraiser)
                             "SALEVAL": 0,
                             "USER1":   user_initials,
                             "USER2":   today_str,
