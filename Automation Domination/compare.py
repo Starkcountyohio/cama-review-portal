@@ -557,6 +557,25 @@ def run_comparison(df_mls: pd.DataFrame, df_cama: pd.DataFrame,
 
     merged = pd.merge(df_mls_r, df_cama, on=cama_id, how="outer", indicator=True)
 
+    # A parcel sold twice in the MLS window (e.g. a flip: bought in June, resold
+    # in October) has two MLS listings that both join to the one CAMA sale. Keep
+    # only the listing whose Closed Date is nearest the CAMA SALEDT — otherwise
+    # the older listing's remarks reach the portal and its Listing # reaches
+    # SALETAB USER11.
+    if "Closed Date" in merged.columns and "SALEDT" in merged.columns:
+        _gap = (pd.to_datetime(merged["Closed Date"], errors="coerce")
+                - pd.to_datetime(merged["SALEDT"], errors="coerce")).abs()
+        merged["_gap"] = _gap.fillna(pd.Timedelta(days=36500))
+        both = merged["_merge"] == "both"
+        nearest = (merged[both].sort_values("_gap", kind="stable")
+                               .drop_duplicates(subset=[cama_id], keep="first"))
+        dropped = merged[both].drop(nearest.index)
+        for _, r in dropped.iterrows():
+            print(f"  Parcel {r[cama_id]}: skipped older MLS listing "
+                  f"{r.get('Listing #', '')} (closed {r.get('Closed Date', '')}) — "
+                  f"kept the one nearest the CAMA sale date")
+        merged = pd.concat([merged[~both], nearest]).sort_index().drop(columns="_gap")
+
     missing_in_cama = []
     missing_in_mls  = []
     value_mismatches = []
