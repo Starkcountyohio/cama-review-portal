@@ -552,6 +552,28 @@ def run_comparison(df_mls: pd.DataFrame, df_cama: pd.DataFrame,
     df_mls[mls_id]   = df_mls[mls_id].apply(_norm_parcel)
     df_cama[cama_id] = df_cama[cama_id].apply(_norm_parcel)
 
+    # A multi-parcel sale is keyed on its main PARID; the rest sit in
+    # ADDITIONAL_PARCELS. If the MLS listing names one of those instead (W45:
+    # 3725 Blackburn Rd NW listed as 5210870, CAMA sale under 5210871), re-key
+    # the listing to the main parcel — otherwise the sale lands in both
+    # residual files and never reaches the portal.
+    if "ADDITIONAL_PARCELS" in df_cama.columns:
+        main_ids = set(df_cama[cama_id])
+        alias = {}
+        for main, extra in zip(df_cama[cama_id], df_cama["ADDITIONAL_PARCELS"]):
+            if pd.isna(extra):
+                continue
+            for p in str(extra).split(","):
+                p = p.strip()
+                if p and p.lower() != "nan":
+                    alias.setdefault(_norm_parcel(p), main)
+        for i, pid in df_mls[mls_id].items():
+            main = alias.get(pid)
+            if main and pid not in main_ids:
+                print(f"  Parcel {pid.lstrip('0')}: MLS listing {df_mls.at[i, 'Listing #'] if 'Listing #' in df_mls.columns else ''} "
+                      f"matched to multi-parcel sale under {main.lstrip('0')}")
+                df_mls.at[i, mls_id] = main
+
     # Rename MLS parcel column to match CAMA for merge
     df_mls_r = df_mls.rename(columns={mls_id: cama_id})
 
