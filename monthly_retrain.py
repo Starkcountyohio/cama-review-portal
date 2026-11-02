@@ -20,6 +20,7 @@ What it does:
 import sys
 import json
 import math
+import time
 import subprocess
 import statistics
 from collections import Counter
@@ -132,7 +133,22 @@ def fetch_grade_cdu(parcel_ids: list) -> dict:
     print(f"  Connecting to Oracle ({ORACLE_DSN})...")
     print(f"  Layers: preferring TAXYR={TARGET_TAX_YEAR}, falling back to {current_year}")
 
-    conn = oracledb.connect(user=ORACLE_USER, password=ORACLE_PASSWORD, dsn=ORACLE_DSN)
+    # The Tyler cloud DB intermittently fails the FIRST connect (DPY-6005 /
+    # cert "Missing Authority Key Identifier"); an immediate retry succeeds.
+    # Same workaround as cama_extract.py.
+    conn = None
+    for attempt in range(1, 5):
+        try:
+            conn = oracledb.connect(user=ORACLE_USER, password=ORACLE_PASSWORD,
+                                    dsn=ORACLE_DSN, tcp_connect_timeout=20)
+            break
+        except oracledb.Error as e:
+            print(f"  ⚠  Oracle connect attempt {attempt} failed: {str(e).splitlines()[0]}")
+            if attempt < 4:
+                time.sleep(3)
+    if conn is None:
+        print("  ✗ Oracle connection failed after 4 attempts")
+        sys.exit(1)
     by_year = {}   # parid -> {taxyr: row}
 
     # Oracle IN clause limit is 1000 — batch if needed
@@ -466,15 +482,61 @@ def update_template(new_prompt: str) -> bool:
     if open_bt == -1:
         print("ERROR: Could not find opening backtick of prompt")
         return False
-    k = open_bt + 1
-    while k < len(html) and not (html[k] == "`" and html[k - 1] != "\\"):
-        k += 1
-    if k >= len(html):
+    # The prompt contains NESTED template literals inside ${...} (e.g. the
+    # `Bathrooms: ${bathStr}` line), so the first unescaped backtick is not the
+    # closing one. Stopping there left the old prompt's tail behind as stray
+    # code — a Babel syntax error and a blank navy portal (2026-10-30).
+    end = _template_literal_end(html, open_bt)  # just past the closing backtick
+    if end == -1:
         print("ERROR: Could not find closing backtick of prompt")
         return False
-    end = k + 1  # include the closing backtick; preserve everything after it
     TEMPLATE.write_text(html[:start] + new_prompt + html[end:], encoding="utf-8")
     return True
+
+
+def _template_literal_end(s: str, i: int) -> int:
+    """s[i] is an opening backtick; return the index just past its closing one,
+    stepping over ${...} expressions (which may hold nested literals), or -1."""
+    i += 1
+    while i < len(s):
+        c = s[i]
+        if c == "\\":
+            i += 2
+        elif c == "`":
+            return i + 1
+        elif c == "$" and s[i + 1:i + 2] == "{":
+            i = _template_expr_end(s, i + 2)
+            if i == -1:
+                return -1
+        else:
+            i += 1
+    return -1
+
+
+def _template_expr_end(s: str, i: int) -> int:
+    """i is just inside a ${; return the index just past its matching }, or -1."""
+    depth = 1
+    while i < len(s):
+        c = s[i]
+        if c == "`":
+            i = _template_literal_end(s, i)
+            if i == -1:
+                return -1
+            continue
+        if c in "\"'":
+            j = i + 1
+            while j < len(s) and s[j] != c:
+                j += 2 if s[j] == "\\" else 1
+            i = j + 1
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return -1
 
 
 # ── Step 8: Rebuild portal ─────────────────────────────────────────────────────
