@@ -281,7 +281,9 @@ def _generate_mass_update_files(combined_df, output_folder, date_str):
     user_initials  = APPRAISER_INITIALS
     user_full_name = APPRAISER_FULL_NAME
     now_str = datetime.now().strftime("%m/%d/%Y %H:%M")
-    today_str = datetime.now().strftime("%Y-%m-%d")
+    # SALES.USER2 is a text column; iasWorld's convention is DD-MON-YYYY in
+    # capitals (02-NOV-2026). An ISO date loads as mixed case 02-Nov-2026.
+    today_str = datetime.now().strftime("%d-%b-%Y").upper()
 
     listing_col = ("Listing_Number" if "Listing_Number" in combined_df.columns
                    else ("Listing #" if "Listing #" in combined_df.columns else None))
