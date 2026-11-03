@@ -21,6 +21,7 @@ Output:
 from playwright.sync_api import sync_playwright
 import csv
 import io
+import json
 import os
 import re
 import shutil
@@ -29,8 +30,17 @@ import time
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import quote
 from PIL import Image
 import random
+
+# Photos saved per parcel: the listing's first N, as -1 … -N.
+PHOTOS_PER_PARCEL = 4
+
+# Seconds to wait between parcels. Zillow's page loads add ~15-25 s on top, so
+# 35-50 s gives ~1 minute per parcel in total. 60-75 s measured ~90 s per parcel
+# (2026-11-03 test, 1 CAPTCHA in 5); 30-60 s drew frequent CAPTCHAs (W45).
+PARCEL_DELAY = (35, 50)
 
 # Force UTF-8 output on Windows (prevents cp1252 errors for arrows, checkmarks, etc.)
 if hasattr(sys.stdout, 'reconfigure'):
@@ -186,7 +196,10 @@ class ZillowDownloader:
         """Search Zillow for property"""
         try:
             full_address = f"{address}, {city}, {state} {zipcode}"
-            url = f"https://www.zillow.com/homes/{full_address}_rb/"
+            # Encode the address: an unescaped "#" (unit numbers like "#I") starts a
+            # URL fragment, so Zillow only saw the street and returned another unit
+            # (W45: 290 Lincoln St SW #I landed on APT A).
+            url = f"https://www.zillow.com/homes/{quote(full_address, safe=', ')}_rb/"
 
             print(f"    Searching...")
             self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
@@ -196,156 +209,138 @@ class ZillowDownloader:
 
             current_url = self.page.url
 
+            # Only trust Zillow's own redirect to a property page. A results page
+            # means Zillow had no exact match; its first link is a guess, and was
+            # the source of wrong-house photos.
             if '/homedetails/' in current_url:
                 print(f"    → Found")
                 return current_url
 
-            try:
-                links = self.page.query_selector_all("a[href*='/homedetails/']")
-                if links:
-                    href = links[0].get_attribute('href')
-                    if href:
-                        print(f"    → Found")
-                        return href if href.startswith('http') else f"https://www.zillow.com{href}"
-            except Exception:
-                pass
-
-            print(f"    → Not found")
+            print(f"    → Not found (no exact match on Zillow)")
             return None
 
         except Exception as e:
             print(f"    → Error: {str(e)[:50]}...")
             return None
 
-    def _parse_photo_urls(self, content):
-        """Parse listing photo URLs from page content. Returns (source_label, urls)."""
-        # ── Primary: JSON-LD structured data ──────────────────────────────
-        # Zillow embeds property photos in a <script type="application/ld+json">
-        # block as "image" entries. This list contains ONLY property photos —
-        # no agent headshots, map tiles, or UI graphics.
-        import json as _json
-        jsonld_urls = []
-        for block in re.findall(r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
-                                content, re.DOTALL):
-            try:
-                data = _json.loads(block)
-                items = data if isinstance(data, list) else [data]
-                for item in items:
-                    imgs = item.get('image', [])
-                    if isinstance(imgs, str):
-                        imgs = [imgs]
-                    for img in imgs:
-                        url = img.get('url', img) if isinstance(img, dict) else img
-                        if isinstance(url, str) and 'zillowstatic.com' in url and url.endswith('.jpg'):
-                            jsonld_urls.append(url.split('?')[0])
-            except Exception:
-                continue
+    @staticmethod
+    def _page_property(content):
+        """Return the property record Zillow embeds in the page, or None.
 
-        if jsonld_urls:
-            return ("JSON-LD", jsonld_urls)
-
-        # ── Fallback: scan page source for Zillow CDN URLs ────────────────
-        raw_urls = re.findall(r'https://photos\.zillowstatic\.com/[^"\'\\]+\.jpg', content)
-
-        def _size_rank(u):
-            if 'uncropped' in u or '_ft_1536' in u: return 5
-            if '_ft_960'   in u:                    return 4
-            if '_ft_768'   in u:                    return 3
-            if '_ft_576'   in u:                    return 2
-            if '_ft_384'   in u or '_ft_320' in u:  return 1
-            return 0
-
-        photo_order = []
-        photo_best  = {}
-        for url in raw_urls:
-            base     = url.split('?')[0]
-            filename = base.split('/')[-1]
-            m        = re.match(r'^([a-f0-9]{20,})-', filename)
-            phash    = m.group(1) if m else base
-            if phash not in photo_best:
-                photo_order.append(phash)
-                photo_best[phash] = base
-            elif _size_rank(base) > _size_rank(photo_best[phash]):
-                photo_best[phash] = base
-
-        unique_urls = [photo_best[h] for h in photo_order]
-        property_urls = [u for u in unique_urls if re.search(r'_ft_\d{3,4}', u)]
-        if property_urls:
-            unique_urls = property_urls
-
-        if unique_urls:
-            return ("page source", unique_urls)
-
-        return ("", [])
-
-    def get_all_photo_urls(self, property_url):
+        Zillow's JSON-LD block used to carry the whole gallery; since ~2026-10-26
+        it holds only the lead photo, which is why W44/W45 saved one photo per
+        parcel. The full gallery for THIS property lives in __NEXT_DATA__ ->
+        gdpClientCache -> <query> -> property. Scanning the raw page source
+        instead (the old fallback) also picks up the "similar homes" carousels —
+        other houses' photos, which is where W45's wrong-house photos came from.
         """
-        Scrape ALL available photo URLs from the property page source.
-        Returns full deduplicated list — caller selects which positions to download.
-        Some listings lazy-load the gallery via JS, so we wait for networkidle and
-        scroll to trigger the load, then poll the parser until URLs appear or timeout.
+        m = re.search(r'<script[^>]+id="__NEXT_DATA__"[^>]*>(.*?)</script>', content, re.DOTALL)
+        if not m:
+            return None
+        try:
+            cache = json.loads(m.group(1))["props"]["pageProps"]["componentProps"]["gdpClientCache"]
+            if isinstance(cache, str):
+                cache = json.loads(cache)
+        except (ValueError, KeyError, TypeError):
+            return None
+        for entry in cache.values():
+            prop = entry.get("property") if isinstance(entry, dict) else None
+            if isinstance(prop, dict) and ("originalPhotos" in prop or "responsivePhotos" in prop):
+                return prop
+        return None
+
+    @staticmethod
+    def _listing_photo_urls(prop):
+        """Full-size listing photo URLs in gallery order, Street View excluded."""
+        urls = []
+        for photo in prop.get("originalPhotos") or prop.get("responsivePhotos") or []:
+            jpegs = (photo.get("mixedSources") or {}).get("jpeg") or []
+            best = max(jpegs, key=lambda s: s.get("width") or 0, default=None)
+            url = (best or {}).get("url") or photo.get("url")
+            # When a listing's photos are taken down, Zillow shows a single
+            # Google Street View image in their place (W45: 305815, 3603459).
+            if url and "photos.zillowstatic.com" in url:
+                urls.append(url)
+        return urls
+
+    @staticmethod
+    def _address_key(street):
+        """(house number, first street word, unit) for comparing two addresses."""
+        s = re.sub(r"[.,]", " ", str(street).upper())
+        unit = re.search(r"(?:#|\b(?:APT|UNIT|STE|SUITE|LOT|BLDG)\b)\s*([A-Z0-9-]+)", s)
+        s = s[:unit.start()] if unit else s
+        words = s.split()
+        number = words[0] if words and words[0][0].isdigit() else ""
+        street_word = words[1] if len(words) > 1 else ""
+        return number, street_word, unit.group(1) if unit else ""
+
+    def get_all_photo_urls(self, property_url, address):
+        """
+        Read the property's own photo gallery from its Zillow page.
+        Returns (status, urls): status is "ok", "Listing Removed" (gallery gone,
+        Street View only), "Address Mismatch", or "Parse Failed".
         """
         try:
             print(f"    Loading page...")
-            self.page.goto(property_url, wait_until="domcontentloaded", timeout=30000)
-            # Wait for the network to quiet — listing photos arrive via XHR after DOM ready
+            if self.page.url.split('#')[0] != property_url.split('#')[0]:
+                self.page.goto(property_url, wait_until="domcontentloaded", timeout=30000)
             try:
                 self.page.wait_for_load_state("networkidle", timeout=20000)
             except Exception:
                 pass
             time.sleep(random.uniform(2, 3))
 
-            # Some listings only render the photo carousel after the user scrolls
-            try:
-                self.page.evaluate("window.scrollBy(0, 500)")
-                time.sleep(1.5)
-                self.page.evaluate("window.scrollTo(0, 0)")
-                time.sleep(1.5)
-            except Exception:
-                pass
-
             self.check_for_captcha()
 
-            # Poll the parser — galleries can still be streaming in
-            source, urls = "", []
+            # The record is server-rendered, but poll briefly in case the page is
+            # still settling after a CAPTCHA.
+            prop = None
             deadline = time.time() + 20
-            while True:
-                content = self.page.content()
-                source, urls = self._parse_photo_urls(content)
-                if urls or time.time() >= deadline:
-                    break
-                time.sleep(1.5)
+            while prop is None and time.time() < deadline:
+                prop = self._page_property(self.page.content())
+                if prop is None:
+                    time.sleep(1.5)
+            if prop is None:
+                print(f"    → Could not read Zillow's property data (page layout changed?)")
+                return ("Parse Failed", [])
 
-            if urls:
-                print(f"    → Found {len(urls)} listing photo(s) in {source}")
-                return urls
+            theirs = prop.get("streetAddress") or (prop.get("address") or {}).get("streetAddress", "")
+            if self._address_key(theirs) != self._address_key(address):
+                print(f"    → Zillow page is for '{theirs}', not '{address}' — skipping")
+                return ("Address Mismatch", [])
 
-            # Fallback: CSS selectors (captures whatever is rendered in DOM)
-            found = []
-            seen2 = set()
-            for selector in ["img[src*='zillowstatic']", "picture img"]:
-                try:
-                    imgs = self.page.query_selector_all(selector)
-                    for img in imgs:
-                        src = img.get_attribute('src')
-                        if src and 'zillowstatic.com' in src and len(src) > 50:
-                            base = src.split('?')[0]
-                            if base not in seen2:
-                                seen2.add(base)
-                                found.append(base)
-                except Exception:
-                    continue
+            urls = self._listing_photo_urls(prop)
+            if not urls:
+                print(f"    → Listing photos taken down (Street View only) — skipping")
+                return ("Listing Removed", [])
 
-            if found:
-                print(f"    → Found {len(found)} photo(s) (CSS fallback)")
-                return found
-
-            print(f"    → No photos found")
-            return []
+            print(f"    → Found {len(urls)} listing photo(s)")
+            return ("ok", urls)
 
         except Exception as e:
             print(f"    → Error: {str(e)[:50]}...")
-            return []
+            return ("Parse Failed", [])
+
+    @staticmethod
+    def _looks_like_floor_plan(body):
+        """True for a floor-plan drawing: mostly near-white and almost colourless.
+
+        Zillow gives no caption or type for floor plans, so this goes by the
+        pixels. Measured 2026-11-03 over 339 photos (W43, W45, a live test):
+        the four floor plans scored 0.41-0.92 near-white with saturation <= 0.08
+        (0.41 was a plan drawn over an aerial shot); the whitest real photo was
+        0.12. Cutoffs sit between: >= 0.30 white AND <= 0.15 saturation.
+        """
+        try:
+            from PIL import ImageStat
+            img = Image.open(io.BytesIO(body)).convert("RGB")
+            img.thumbnail((200, 200))
+            px = list(img.getdata())
+            white = sum(1 for r, g, b in px if min(r, g, b) >= 235) / len(px)
+            saturation = ImageStat.Stat(img.convert("HSV")).mean[1] / 255
+            return white >= 0.30 and saturation <= 0.15
+        except Exception:
+            return False
 
     def download(self, photo_url, filepath, check_portrait=False):
         """Download photo using Playwright (bypasses SSL issues)"""
@@ -398,6 +393,9 @@ class ZillowDownloader:
                             return False
                     except Exception:
                         pass
+                if self._looks_like_floor_plan(body):
+                    print(f"    ⊘ Floor plan — skipping")
+                    return False
                 with open(filepath, 'wb') as f:
                     f.write(body)
                 return True
@@ -491,7 +489,7 @@ class ZillowDownloader:
         print(f"CAMA folder:   {self.photos_dir}")
         print(f"               (exterior photo 1 only → iasWorld Document Loader)")
         print(f"Portal folder: {self.portal_dir}")
-        print(f"               (photo 1 exterior + photos 5-7 interiors → Review Portal)")
+        print(f"               (listing photos 1-{PHOTOS_PER_PARCEL} → Review Portal)")
 
         try:
             df = pd.read_excel(excel_file)
@@ -533,24 +531,24 @@ class ZillowDownloader:
                     results.append({'Parcel_ID': parcel_id, 'Photos': 0, 'Status': 'Not Found'})
                     # Delay on misses too — skipping it fires back-to-back searches once
                     # Zillow starts refusing, which keeps the block going (W44: 24 misses in a row)
-                    time.sleep(random.uniform(30, 60))
+                    time.sleep(random.uniform(*PARCEL_DELAY))
                     continue
 
-                all_urls = self.get_all_photo_urls(prop_url)
-                if not all_urls:
-                    results.append({'Parcel_ID': parcel_id, 'Photos': 0, 'Status': 'No Photo'})
-                    time.sleep(random.uniform(30, 60))
+                status, all_urls = self.get_all_photo_urls(prop_url, address)
+                if status != "ok":
+                    results.append({'Parcel_ID': parcel_id, 'Photos': 0, 'Status': status})
+                    time.sleep(random.uniform(*PARCEL_DELAY))
                     continue
 
-                # Select photo 1 (front exterior) + photos 5, 6, 7 (interiors).
-                # Stark County MLS pattern: photos 2-4 are other exterior angles; 5+ are interiors.
-                # Saved as -1, -2, -3, -4 regardless of original Zillow position.
-                POSITIONS = [0, 4, 5, 6]
-                selected_urls = [all_urls[i] for i in POSITIONS if i < len(all_urls)]
-                labels = ["exterior", "interior", "interior", "interior"]
-
+                # The listing's first photos, in gallery order, floor plans skipped.
+                # Photo 1 is the front exterior (-> CAMA + Portal) and is never
+                # replaced by a later photo — promoting an interior to the iasWorld
+                # primary is a human call. Photos 2+ go to the Portal only.
                 saved = 0
-                for n, (url, label) in enumerate(zip(selected_urls, labels), 1):
+                n = 1
+                for pos, url in enumerate(all_urls):
+                    if n > PHOTOS_PER_PARCEL:
+                        break
                     portal_file = os.path.join(self.portal_dir, f"{parcel_id}-{n}.jpg")
                     ok = self.download(url, portal_file, check_portrait=(n == 1))
                     if ok:
@@ -558,16 +556,18 @@ class ZillowDownloader:
                         if n == 1:
                             # Copy exterior photo to CAMA folder as well
                             shutil.copy2(portal_file, cama_file)
-                            print(f"  ✓ {parcel_id}-1.jpg  ({label}, CAMA + Portal)")
+                            print(f"  ✓ {parcel_id}-1.jpg  (exterior, CAMA + Portal)")
                         else:
-                            print(f"  ✓ {parcel_id}-{n}.jpg  ({label}, Portal)")
+                            print(f"  ✓ {parcel_id}-{n}.jpg  (Portal, listing photo {pos + 1})")
+                    if ok or n == 1:
+                        n += 1
 
                 if saved > 0:
                     results.append({'Parcel_ID': parcel_id, 'Photos': saved, 'Status': 'Success'})
                 else:
                     results.append({'Parcel_ID': parcel_id, 'Photos': 0, 'Status': 'Failed'})
 
-                time.sleep(random.uniform(30, 60))  # Polite delay between parcels (was 5-10s; slower = lighter load on Zillow)
+                time.sleep(random.uniform(*PARCEL_DELAY))  # Polite delay between parcels; shorter waits drew CAPTCHAs
 
         except KeyboardInterrupt:
             print("\n\n⚠️  Interrupted by user")
