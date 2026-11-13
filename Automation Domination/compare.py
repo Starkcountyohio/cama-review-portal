@@ -41,6 +41,11 @@ COLUMNS_TO_COMPARE_CATEGORICAL = [
 NUMERIC_TOLERANCE = 0.01
 SKIP_ZERO_VALUES  = True
 
+# A parcel match only counts when the sale prices agree: CAMA PRICE within this
+# fraction of the MLS Close Price, or of the List Price while the listing is
+# still pending (no close price yet). Anything else goes to Missing in MLS.
+SALE_PRICE_TOLERANCE = 0.10
+
 # ── Appraiser info (used for SaleTab / MassEntrance output) ───────────────────
 # Per operator — set in each machine's credentials.py, so whoever runs the week
 # is the one stamped on SALETAB/MassEntrance. No default on purpose: a missing
@@ -580,6 +585,37 @@ def run_comparison(df_mls: pd.DataFrame, df_cama: pd.DataFrame,
     df_mls_r = df_mls.rename(columns={mls_id: cama_id})
 
     merged = pd.merge(df_mls_r, df_cama, on=cama_id, how="outer", indicator=True)
+
+    # The MLS export spans months, so a parcel match can pair this week's CAMA
+    # sale with an earlier, unrelated MLS sale (W46: 4101529's $11,900
+    # mineral-rights sale joined to the parcel's $311,000 July listing). Only
+    # keep a pairing whose prices agree; otherwise split it back into a CAMA
+    # sale missing in MLS and an MLS listing missing in CAMA.
+    if "PRICE" in merged.columns and "Close Price" in merged.columns:
+        both = merged["_merge"] == "both"
+        cama_price = pd.to_numeric(merged["PRICE"], errors="coerce")
+        close_price = pd.to_numeric(merged["Close Price"], errors="coerce").fillna(0)
+        list_price = (pd.to_numeric(merged["List Price"], errors="coerce").fillna(0)
+                      if "List Price" in merged.columns else 0)
+        ref_price = close_price.where(close_price > 0, list_price)
+        price_ok = (ref_price > 0) & ((cama_price - ref_price).abs()
+                                      <= SALE_PRICE_TOLERANCE * ref_price)
+        bad = merged[both & ~price_ok]
+        if len(bad):
+            matched_ids = set(merged.loc[both & price_ok, cama_id])
+            mls_cols  = [c for c in df_mls_r.columns if c != cama_id and c in merged.columns]
+            cama_cols = [c for c in df_cama.columns if c != cama_id and c in merged.columns]
+            for _, r in bad.iterrows():
+                print(f"  Parcel {str(r[cama_id]).lstrip('0')}: MLS listing {r.get('Listing #', '')} "
+                      f"(${ref_price[r.name]:,.0f}) doesn't match the CAMA sale "
+                      f"(${cama_price[r.name]:,.0f}) — not paired")
+            mls_only = bad.copy()
+            mls_only[cama_cols] = np.nan
+            mls_only["_merge"] = "left_only"
+            cama_only = bad[~bad[cama_id].isin(matched_ids)].drop_duplicates(subset=[cama_id]).copy()
+            cama_only[mls_cols] = np.nan
+            cama_only["_merge"] = "right_only"
+            merged = pd.concat([merged.drop(bad.index), mls_only, cama_only], ignore_index=True)
 
     # A parcel sold twice in the MLS window (e.g. a flip: bought in June, resold
     # in October) has two MLS listings that both join to the one CAMA sale. Keep
