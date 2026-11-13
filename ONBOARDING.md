@@ -14,7 +14,7 @@ from the project root: `Portal Builder/`.
 
 - **Live portal:** https://starkcountyohio.github.io/cama-review-portal/review_portal.html
 - **Repo:** https://github.com/Starkcountyohio/cama-review-portal (public — never commit keys)
-- **Cadence:** the operator (Bethany Miller as of 2026-W44; Jason no longer runs it) runs this Monday. Appraisers review Tue–Fri. Field-visit flags assigned the following Tuesday.
+- **Cadence:** the operator (Bethany Miller as of 2026-W44; Jason Jeffries no longer runs it) runs this Monday. Appraisers review Tue–Fri. Field-visit flags assigned the following Tuesday.
 
 ---
 
