@@ -38,6 +38,35 @@ def get_week_dates(run_date=None):
     return start_date, end_date
 
 
+# Sales kept out of the comparison entirely, by their SALES flags: USER7 = 'N'
+# (not arm's length) or USER43 = 'MIN' (mineral rights only). W46: 4101529's
+# $11,900 TD Minerals sale (USER7 N, USER43 MIN) reached the portal.
+EXCLUDE_USER7  = {"N"}
+EXCLUDE_USER43 = {"MIN"}
+
+
+def _excluded_salekeys(cur, rows, cols) -> dict:
+    """Return {salekey: reason} for the extract's sales that the flags exclude.
+    Checks each row's first SALEKEY (the main parcel's sale)."""
+    i = cols.index("SALEKEY")
+    keys = sorted({str(r[i]).split(",")[0].strip() for r in rows if r[i] is not None})
+    excluded = {}
+    for start in range(0, len(keys), 500):           # Oracle caps IN lists at 1000
+        chunk = keys[start:start + 500]
+        binds = ",".join(f":{n + 1}" for n in range(len(chunk)))
+        cur.execute(f"SELECT SALEKEY, USER7, USER43 FROM SALES WHERE SALEKEY IN ({binds})",
+                    [int(k) for k in chunk])
+        for salekey, user7, user43 in cur.fetchall():
+            reasons = []
+            if (user7 or "").strip().upper() in EXCLUDE_USER7:
+                reasons.append(f"USER7 {user7}")
+            if (user43 or "").strip().upper() in EXCLUDE_USER43:
+                reasons.append(f"USER43 {user43}")
+            if reasons:
+                excluded[str(salekey)] = ", ".join(reasons)
+    return excluded
+
+
 def extract_cama(output_path: Path, run_date=None, start_date=None, end_date=None) -> pd.DataFrame:
     """
     Run the CAMA SQL query and save results to CSV.
@@ -102,6 +131,7 @@ def extract_cama(output_path: Path, run_date=None, start_date=None, end_date=Non
             cur.execute(sql)
             cols = [col[0].upper() for col in cur.description]
             rows = cur.fetchall()
+            excluded = _excluded_salekeys(cur, rows, cols)
     except oracledb.Error as e:
         print(f"  ✗ Query failed: {e}")
         conn.close()
@@ -111,6 +141,15 @@ def extract_cama(output_path: Path, run_date=None, start_date=None, end_date=Non
 
     df = pd.DataFrame(rows, columns=cols)
     print(f"  ✓ {len(df)} rows returned from Oracle")
+
+    if excluded:
+        first_key = df["SALEKEY"].astype(str).str.split(",").str[0].str.strip()
+        drop = first_key.isin(excluded)
+        for _, r in df[drop].iterrows():
+            print(f"  Parcel {r['PARID']}: sale {first_key[r.name]} (${r['PRICE']:,}, {r['OWN1']}) "
+                  f"excluded — {excluded[first_key[r.name]]}")
+        df = df[~drop].reset_index(drop=True)
+        print(f"  ✓ {len(df)} rows after excluding {int(drop.sum())} non-arm's-length / mineral sale(s)")
 
     df.to_csv(output_path, index=False)
     print(f"  ✓ Saved: {output_path.name}")
