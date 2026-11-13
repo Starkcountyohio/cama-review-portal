@@ -41,10 +41,13 @@ COLUMNS_TO_COMPARE_CATEGORICAL = [
 NUMERIC_TOLERANCE = 0.01
 SKIP_ZERO_VALUES  = True
 
-# A parcel match only counts when the sale prices agree: CAMA PRICE within this
-# fraction of the MLS Close Price, or of the List Price while the listing is
-# still pending (no close price yet). Anything else goes to Missing in MLS.
-SALE_PRICE_TOLERANCE = 0.10
+# A parcel match only counts when the sale prices agree: CAMA PRICE within
+# SALE_PRICE_TOLERANCE of the MLS Close Price, or within PENDING_PRICE_TOLERANCE
+# of the List Price while the listing is still pending (no close price yet —
+# sales land further from list than from close: 94% of pending matches are
+# within 20%, 86% within 10%). Anything else goes to Missing in MLS.
+SALE_PRICE_TOLERANCE    = 0.10
+PENDING_PRICE_TOLERANCE = 0.20
 
 # ── Appraiser info (used for SaleTab / MassEntrance output) ───────────────────
 # Per operator — set in each machine's credentials.py, so whoever runs the week
@@ -598,8 +601,9 @@ def run_comparison(df_mls: pd.DataFrame, df_cama: pd.DataFrame,
         list_price = (pd.to_numeric(merged["List Price"], errors="coerce").fillna(0)
                       if "List Price" in merged.columns else 0)
         ref_price = close_price.where(close_price > 0, list_price)
+        tolerance = np.where(close_price > 0, SALE_PRICE_TOLERANCE, PENDING_PRICE_TOLERANCE)
         price_ok = (ref_price > 0) & ((cama_price - ref_price).abs()
-                                      <= SALE_PRICE_TOLERANCE * ref_price)
+                                      <= tolerance * ref_price)
         bad = merged[both & ~price_ok]
         if len(bad):
             matched_ids = set(merged.loc[both & price_ok, cama_id])
