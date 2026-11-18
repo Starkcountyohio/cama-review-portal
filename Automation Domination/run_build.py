@@ -120,6 +120,7 @@ def run(run_date: date = None, skip_photo_checks: bool = False,
     print(f"    review_portal.html")
     print(f"    version.json")
     print(f"    archive/{week_key}.json")
+    print(f"    archive/index.json")
     return {"week_key": week_key, "week_label": week_label,
             "size_mb": size_mb, "photos": len(photo_map),
             "mismatches": len(mismatches_rows), "perfects": len(perfects_rows),

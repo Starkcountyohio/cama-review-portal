@@ -150,13 +150,14 @@ few stragglers, build a tiny retry `.xlsx` of just those rows and pass it to
 python "Automation Domination\run_build.py"
 ```
 Runs the **photo gate** (see §2a) first, then regenerates the photo-upload CSV,
-then builds `review_portal.html` + `version.json` + `archive/YYYY-WNN.json`.
-Does **not** commit or push. If the gate finds a hard failure it exits 1 and
+then builds `review_portal.html` + `version.json` + `archive/YYYY-WNN.json`, and
+refreshes `archive/index.json` (each week's parcel count, which the home page's
+progress percentages depend on). Does **not** commit or push. If the gate finds a hard failure it exits 1 and
 builds nothing — fix the photos and re-run.
 
 **E. Sanity-check, then push** — verify the built HTML (see §4), then:
 ```powershell
-git add review_portal.html version.json archive/<YYYY-WNN>.json
+git add review_portal.html version.json archive/<YYYY-WNN>.json archive/index.json
 git commit -m "Portal update — Week of <Month DD, YYYY>"
 git push origin main
 ```
@@ -310,7 +311,8 @@ photos after a build. W33: **68 rows @ Taxyr=2027**, one per covered parcel.
 and you fixed photos out of band, build directly (mirrors steps 7–8): build
 `review_portal.html`, write `version.json` with the **same** `generatedAt`
 baked into the HTML (mismatched = permanent false reload banner), save
-`archive/YYYY-WNN.json`, then commit + push those three files to `main`
+`archive/YYYY-WNN.json` (which also refreshes `archive/index.json`), then
+commit + push those four files to `main`
 (GitHub Pages source branch).
 
 Before pushing, sanity-check the built HTML — a broken template ships a blank

@@ -1019,6 +1019,17 @@ function apiNotifySupport(weekKey, weekLabel, parcelIds) {
   }).then(r => r.json()).catch(() => ({ ok: false, message: "Network error" }));
 }
 
+// archive/index.json: { weeks: { "YYYY-WNN": { totalParcels } } }, rebuilt by
+// build_portal.py on every build. Gives the home page each past week's real parcel
+// count without downloading every archive file.
+function loadArchiveIndex() {
+  if (!GITHUB_PAGES_BASE) return Promise.resolve({});
+  return fetch(GITHUB_PAGES_BASE + "/archive/index.json?t=" + Date.now(), { cache: "no-store" })
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .then(function(d) { return (d && d.weeks) || {}; })
+    .catch(function() { return {}; });
+}
+
 function loadArchive(weekKey) {
   if (!GITHUB_PAGES_BASE) return Promise.resolve(null);
   return fetch(GITHUB_PAGES_BASE + "/archive/" + weekKey + ".json")
@@ -1087,9 +1098,17 @@ function WeekSelectorPanel({ sessions, activeWeek, onSelect, onNewWeek }) {
           const s = sessions[key];
           const isActive = key === activeWeek;
           // Use authoritative totalParcels from archive if available, otherwise fall back to counting arrays
-          const totalParcels = s.totalParcels || (((s.mismatches ? s.mismatches.length : 0) + (s.perfects ? s.perfects.length : 0)) || (s.parcelCount||0));
           const reviewed = Object.keys(s.statuses||{}).length || (s.reviewedCount||0);
-          const pct = totalParcels > 0 ? Math.round(reviewed/totalParcels*100) : 0;
+          // Parcel count from the archive (index.json or the loaded file). The tracker's
+          // own count (parcelCount) only covers parcels that already have a status, so
+          // it is the last resort. If more statuses exist than archived parcels, the
+          // archive for that week is incomplete (2026-W11, W16) — use the larger figure
+          // rather than showing over 100%.
+          const archived = s.totalParcels || (((s.mismatches ? s.mismatches.length : 0) + (s.perfects ? s.perfects.length : 0)) || (s.parcelCount||0));
+          const totalParcels = Math.max(archived, reviewed);
+          const left = totalParcels - reviewed;
+          // floor, so a week only reads 100% when nothing is left
+          const pct = totalParcels > 0 ? Math.floor(reviewed/totalParcels*100) : 0;
           return (
             <div key={key} onClick={()=>onSelect(key)}
               style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"9px 12px",borderRadius:8,cursor:"pointer",background:isActive?"#0ea5e922":"#0f172a",border:`1.5px solid ${isActive?"#0ea5e9":"#334155"}`,transition:"all 0.15s"}}
@@ -1099,6 +1118,7 @@ function WeekSelectorPanel({ sessions, activeWeek, onSelect, onNewWeek }) {
                 <div style={{fontSize:12,fontWeight:700,color:isActive?"#38bdf8":"#e2e8f0",fontFamily:"'DM Mono',monospace"}}>{weekKeyToLabel(key)}</div>
                 <div style={{fontSize:10,color:"#64748b",fontFamily:"'DM Mono',monospace",marginTop:2}}>
                   {totalParcels > 0 ? totalParcels : "?"} parcels  {s.createdAt}
+                  {left > 0 && <span style={{color:"#fbbf24"}}>  · {left} unreviewed</span>}
                 </div>
               </div>
               <div style={{display:"flex",alignItems:"center",gap:8}}>
@@ -1187,6 +1207,33 @@ function App() {
             merged[wk].reviewedCount = (summary.reviewed || 0) + (summary.fieldVisit || 0);
             // Merge statuses without touching parcel data
           }
+        });
+        return merged;
+      });
+    });
+  }, []);
+
+  // Real parcel count for every archived week, so the home list's percentages are
+  // right before a week is opened. Also lists archived weeks nobody has touched yet.
+  useEffect(function() {
+    loadArchiveIndex().then(function(idx) {
+      if (!idx || !Object.keys(idx).length) return;
+      setSessions(function(prev) {
+        var merged = Object.assign({}, prev);
+        Object.entries(idx).forEach(function(entry) {
+          var wk = entry[0], total = (entry[1] && entry[1].totalParcels) || 0;
+          if (!total) return;
+          if (!merged[wk]) {
+            merged[wk] = {
+              mismatches: [], perfects: [], statuses: {},
+              windowId: "638981240146803746",
+              createdAt: weekKeyToLabel(wk),
+              parcelCount: 0, reviewedCount: 0,
+              needsUpload: true
+            };
+          }
+          // Keep a count already set from a loaded archive or the current build
+          if (!merged[wk].totalParcels) merged[wk] = Object.assign({}, merged[wk], { totalParcels: total });
         });
         return merged;
       });

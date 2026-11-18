@@ -216,7 +216,38 @@ def save_archive(mismatches_rows: list, perfects_rows: list,
 
     size_kb = archive_path.stat().st_size / 1024
     print(f"  Archive:    {archive_path.name}  ({size_kb:,.0f} KB)")
+    write_archive_index(archive_dir)
     return archive_path
+
+
+def write_archive_index(archive_dir: Path) -> Path:
+    """
+    Write archive/index.json: {"weeks": {"YYYY-WNN": {"totalParcels": N}}}.
+    The home page's "Previous Weeks" list reads this for each week's real parcel
+    count. Without it the only count available is the status tracker's, which
+    covers only parcels that already have a status, so every week shows 100%.
+    Rebuilt from every archive file each time, so it can't drift. Keyed by file
+    name, because that is the name the portal fetches the week by.
+    """
+    weeks = {}
+    for path in sorted(archive_dir.glob("*-W*.json")):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError) as e:
+            print(f"  ⚠ index: skipped {path.name} ({e})")
+            continue
+        ids = set()
+        for row in (data.get("mismatches") or []) + (data.get("perfects") or []):
+            pid = str(row.get("Parcel_ID") or row.get("PARID") or "").strip()
+            if pid:
+                ids.add(pid)
+        weeks[path.stem] = {"totalParcels": len(ids) or int(data.get("totalParcels") or 0)}
+    index_path = archive_dir / "index.json"
+    with open(index_path, "w", encoding="utf-8") as f:
+        json.dump({"weeks": weeks}, f, indent=1, sort_keys=True)
+    print(f"  Index:      {index_path.name}  ({len(weeks)} weeks)")
+    return index_path
 
 
 # ── Build HTML ─────────────────────────────────────────────────────────────────

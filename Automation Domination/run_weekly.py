@@ -390,7 +390,8 @@ def run(run_date: date = None, start_date=None, end_date=None):
     print(f"\n[8/8] Pushing to GitHub")
     import subprocess as _sp
     try:
-        _sp.run(["git", "add", "review_portal.html", "version.json", str(archive_path.relative_to(PORTAL_ROOT))],
+        _sp.run(["git", "add", "review_portal.html", "version.json", str(archive_path.relative_to(PORTAL_ROOT)),
+                 "archive/index.json"],
                 cwd=str(PORTAL_ROOT), check=True)
         _sp.run(["git", "commit", "-m", f"Portal update — {week_label}"],
                 cwd=str(PORTAL_ROOT), check=True)
