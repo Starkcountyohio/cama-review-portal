@@ -336,6 +336,14 @@ W33: 7.3 MB, 68 parcels, 259 photos, all checks clean, pushed as `bd0b18b`.
 > so it doesn't build/push a duplicate commit.
 
 ### 5. Create the future-year (2027) records — BEFORE the manual iasWorld steps
+
+> **PAUSED from 2026-W48 (Nov 23) until summer 2027. Skip this step.**
+> On Tuesday 2026-11-17 a mass roll moved **every** parcel to tax year 2027 in
+> iasWorld, so the 2027 layer already exists for all of them. Bethany will say
+> when weekly future-year creation is needed again. Until then, go straight to §6.
+> Keep `create_future_year.py` where it is: `make_photo_upload.py` and
+> `monthly_retrain.py` import `TARGET_TAX_YEAR` from it on every run.
+
 All manual iasWorld steps below apply to the **2027** record, so the 2027 layer
 must exist first.
 
@@ -385,6 +393,11 @@ operator right now:
 ---
 
 ## Annual rollover (each January)
+> **January 2027: check with Bethany before bumping.** After the Nov 2026 mass
+> roll, 2027 is the working layer and future-year creation is paused until summer.
+> Bumping to 2028 in January would stamp photo uploads `Taxyr=2028`, and the
+> monthly retrain would read the wrong layer.
+
 Bump `TARGET_TAX_YEAR` in `Automation Domination/create_future_year.py`
 (single source of truth — `make_photo_upload.py` imports it) and roll
 `EFF_AGE_BASE_YEAR` forward in both the template and the built portal.

@@ -47,6 +47,10 @@ described both, and neither has ever existed on the build machine.
 photo-review rules, the pre-push checks, and the known failure modes. Short version:
 `run_weekly.py` (all-in-one) or `run_datapull.py` → Zillow photos → photo review →
 `run_build.py` → commit + push → `create_future_year.py` → manual iasWorld steps.
+**`create_future_year.py` is PAUSED from 2026-W48 until summer 2027.** A mass roll on
+2026-11-17 moved every parcel to TY2027. Skip the step until Bethany says to resume.
+Keep the script in place, because `make_photo_upload.py` and `monthly_retrain.py`
+import `TARGET_TAX_YEAR` from it.
 Do not run `build_portal.py` by hand for a weekly deploy; the pipeline scripts call it
 and also write `version.json` and the archive, which a bare build does not.
 
