@@ -22,6 +22,17 @@ SQL_FILE = Path(__file__).parent / (
 )
 
 
+# Tax-year layer the comparison reads property details from (PARDAT, LEGDAT,
+# DWELDAT, ADDN: Grade, CDU, beds, baths, SFLA, etc.). Sales are not
+# year-filtered; they are picked by sale date. Set to 2027 for 2026-W48 (Nov 23),
+# after the 2026-11-17 mass roll copied every parcel to TY2027. All appraiser
+# changes go on the 2027 record, so reading 2026 compared MLS against stale values.
+# Used to follow the calendar year. Change it by hand, only when Bethany says the
+# working tax year has moved. Do not tie it to create_future_year.TARGET_TAX_YEAR,
+# which follows a different (January) schedule.
+CAMA_TAX_YEAR = 2027
+
+
 def get_week_dates(run_date=None):
     """
     Calculate CAMA query date range for a Monday run.
@@ -67,7 +78,8 @@ def _excluded_salekeys(cur, rows, cols) -> dict:
     return excluded
 
 
-def extract_cama(output_path: Path, run_date=None, start_date=None, end_date=None) -> pd.DataFrame:
+def extract_cama(output_path: Path, run_date=None, start_date=None, end_date=None,
+                 tax_year: int = CAMA_TAX_YEAR) -> pd.DataFrame:
     """
     Run the CAMA SQL query and save results to CSV.
     Returns a DataFrame of the results.
@@ -99,9 +111,10 @@ def extract_cama(output_path: Path, run_date=None, start_date=None, end_date=Non
         sql,
     )
 
-    # Update TAXYR to current year (changes once per year during reappraisal)
-    current_year = (run_date or date.today()).year
-    sql = re.sub(r"P\.TAXYR\s*=\s*\d{4}", f"P.TAXYR = {current_year}", sql)
+    # Property-detail layer (see CAMA_TAX_YEAR). LEGDAT, RTDIST, DWELDAT and ADDN
+    # all join on P.TAXYR, so this one value sets the year for the whole query.
+    print(f"  Property records: tax year {tax_year}")
+    sql = re.sub(r"P\.TAXYR\s*=\s*\d{4}", f"P.TAXYR = {tax_year}", sql)
     sql = re.sub(r"D\.TAXYR\s*=\s*P\.TAXYR", "D.TAXYR = P.TAXYR", sql)  # leave joins as-is
 
     # Strip trailing semicolon — oracledb cursor.execute() does not allow it

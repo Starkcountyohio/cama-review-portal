@@ -51,6 +51,9 @@ photo-review rules, the pre-push checks, and the known failure modes. Short vers
 2026-11-17 moved every parcel to TY2027. Skip the step until Bethany says to resume.
 Keep the script in place, because `make_photo_upload.py` and `monthly_retrain.py`
 import `TARGET_TAX_YEAR` from it.
+**The weekly CAMA pull reads the 2027 layer** (`CAMA_TAX_YEAR` in `cama_extract.py`,
+from 2026-W48, at Bethany's request). It's a fixed value, not the calendar year. Sales
+and photos are still 2026, chosen by sale date.
 Do not run `build_portal.py` by hand for a weekly deploy; the pipeline scripts call it
 and also write `version.json` and the archive, which a bare build does not.
 

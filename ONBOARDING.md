@@ -398,6 +398,10 @@ operator right now:
 > Bumping to 2028 in January would stamp photo uploads `Taxyr=2028`, and the
 > monthly retrain would read the wrong layer.
 
+The weekly comparison's tax year is a **separate** setting: `CAMA_TAX_YEAR` in
+`Automation Domination/cama_extract.py` (2027 from 2026-W48). It no longer follows
+the calendar. Change it by hand only when Bethany says the working tax year has moved.
+
 Bump `TARGET_TAX_YEAR` in `Automation Domination/create_future_year.py`
 (single source of truth — `make_photo_upload.py` imports it) and roll
 `EFF_AGE_BASE_YEAR` forward in both the template and the built portal.
