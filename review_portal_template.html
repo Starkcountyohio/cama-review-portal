@@ -140,7 +140,10 @@ function normalizeRow(row, fileType) {
                  zillowUrl, parcelUrl, yrblt, effyr, grade, cdu, remarks,
                  fixbath, fixhalf, sfla };
 
-  if (fileType === "mismatches") {
+  // Callers have used both "mismatch" and "mismatches". Accept either: the
+  // archive loader passed "mismatch" and every past-week mismatch rendered as
+  // PERFECT with no field table (found 2026-11-20).
+  if (fileType === "mismatches" || fileType === "mismatch") {
     return { ...base, type:"mismatch",
       fieldMls:   String(row["Field_MLS"]  || ""),
       fieldCama:  String(row["Field_CAMA"] || ""),
@@ -1255,21 +1258,25 @@ function App() {
           return u;
         });
       }
-      if (Object.keys(resp.notes).length > 0) setNotes(resp.notes);
+      setNotes(resp.notes || {});
       setReviewers(resp.reviewers || {});
       setNotified(resp.notified || {});
     });
     if (!freshBuild && !hasParcels) {
       loadArchive(weekKey).then(function(archive) {
         if (!archive) return;
-        var normMM = (archive.mismatches || []).map(function(r){ return normalizeRow(r,"mismatch"); });
-        var normPP = (archive.perfects   || []).map(function(r){ return normalizeRow(r,"perfect"); });
+        // Same shape as the current week: one entry per parcel, each mismatch
+        // parcel carrying its field rows. The session keeps this normalized
+        // form too; it used to keep the raw archive rows, so reopening a past
+        // week rendered them unconverted and collapsed the week to 1 parcel.
+        var normMM = groupByParcel((archive.mismatches || []).map(function(r){ return normalizeRow(r,"mismatches"); }));
+        var normPP = groupByParcel((archive.perfects   || []).map(function(r){ return normalizeRow(r,"perfect"); }));
         setPortalParcelData({ mismatches: normMM, perfects: normPP });
         setSessions(function(s) {
           var u = Object.assign({}, s);
           u[weekKey] = Object.assign({}, u[weekKey], {
-            mismatches: archive.mismatches || [],
-            perfects:   archive.perfects   || [],
+            mismatches: normMM,
+            perfects:   normPP,
             totalParcels: archive.totalParcels || null,  // Authoritative count from archive
             needsUpload: false
           });
@@ -1461,11 +1468,18 @@ function App() {
     XLSX.writeFile(wb,`review_status_${portalWeek||new Date().toISOString().slice(0,10)}.xlsx`);
   }, [allParcels, statuses, portalWeek]);
 
-  const counts = useMemo(()=>({
-    unreviewed: allParcels.length-Object.keys(statuses).length,
-    reviewed:   Object.values(statuses).filter(s=>s==="Reviewed").length,
-    fieldVisit: Object.values(statuses).filter(s=>s==="Field Visit").length,
-  }),[allParcels,statuses]);
+  // Count only statuses for parcels in this week's list. The tracker can hold
+  // statuses for parcels that aren't (2026-W11/W16 archives were overwritten),
+  // which made UNR go negative and REV exceed the parcel count.
+  const counts = useMemo(()=>{
+    const ids = allParcels.map(p=>p.parcelId);
+    const st  = ids.map(id=>statuses[id]).filter(Boolean);
+    return {
+      unreviewed: ids.length - st.length,
+      reviewed:   st.filter(s=>s==="Reviewed").length,
+      fieldVisit: st.filter(s=>s==="Field Visit").length,
+    };
+  },[allParcels,statuses]);
 
   // -- Read API key status from context ------------------------------------
   const currentApiKey = React.useContext(ApiKeyContext);
