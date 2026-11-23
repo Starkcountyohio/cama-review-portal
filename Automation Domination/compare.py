@@ -5,6 +5,7 @@ Produces 4 Excel files in the output folder.
 """
 
 import io
+import difflib
 import re
 import numpy as np
 import pandas as pd
@@ -426,6 +427,32 @@ FUZZY_DATE_WINDOW_DAYS = 7
 FUZZY_PRICE_TOLERANCE  = 1.0   # dollars
 
 
+_ADDR_DIRS = {"N", "S", "E", "W", "NE", "NW", "SE", "SW",
+              "NORTH", "SOUTH", "EAST", "WEST"}
+
+
+def _split_address(addr):
+    """'806 38th St NW' -> ('806', '38TH'). Returns (None, None) if no number."""
+    words = re.sub(r"[^\w\s]", " ", str(addr or "")).upper().split()
+    if not words or not words[0].isdigit():
+        return None, None
+    rest = [w for w in words[1:] if w not in _ADDR_DIRS]
+    return words[0].lstrip("0") or "0", (rest[0] if rest else "")
+
+
+def _address_check(mls_addr, cama_addr) -> str:
+    """'match', 'different', or 'no CAMA address'."""
+    c_no, c_st = _split_address(cama_addr)
+    if c_no is None:
+        return "no CAMA address"
+    m_no, m_st = _split_address(mls_addr)
+    if m_no != c_no:
+        return "different"
+    if m_st == c_st or difflib.SequenceMatcher(None, m_st, c_st).ratio() >= 0.8:
+        return "match"
+    return "different"
+
+
 def _find_likely_parcel_mismatches(merged: pd.DataFrame,
                                    output_folder: Path,
                                    date_str: str) -> int:
@@ -477,6 +504,25 @@ def _find_likely_parcel_mismatches(merged: pd.DataFrame,
 
     candidates["Date_Diff_Days"] = date_diff[price_ok & date_ok]
 
+    # Address check — price + date alone pairs unrelated houses that happened to
+    # sell for the same round number the same week (W48: three false hits).
+    # Keep a pair only when the house number matches and the street name is
+    # close (MLS and iasWorld spell some streets differently, e.g. CLIFMONT /
+    # CLIFTMONT). A blank CAMA address can't be checked, so it stays, labelled.
+    if "SITUS_ADDRESS_cama" in candidates.columns:
+        checks = [_address_check(a, b) for a, b in
+                  zip(candidates.get("Address_mls", ""), candidates["SITUS_ADDRESS_cama"])]
+        candidates["Address_Check"] = checks
+        dropped = sum(1 for c in checks if c == "different")
+        candidates = candidates[[c != "different" for c in checks]].copy()
+        if dropped:
+            print(f"  Likely-typo check: {dropped} price/date hit(s) dropped — different address")
+        if candidates.empty:
+            print("  ✓ No likely parcel typos (after the address check)")
+            return 0
+    else:
+        candidates["Address_Check"] = "not checked"
+
     # left_only and right_only share every column (both slices of the outer
     # merge), so the cross-merge with suffixes=("_mls","_cama") renames them
     # all — including PARID. MLS-origin fields are real on the _mls side only;
@@ -505,6 +551,8 @@ def _find_likely_parcel_mismatches(merged: pd.DataFrame,
             "Parcel_Digit_Diff":   _parcel_digit_diff(mls_p, cama_p),
             "MLS_Listing":         r.get("Listing #_mls", ""),
             "MLS_Address":         r.get("Address_mls", ""),
+            "CAMA_Address":        r.get("SITUS_ADDRESS_cama", ""),
+            "Address_Check":       r.get("Address_Check", ""),
             "City":                r.get("_mls_city", ""),
             "MLS_Closed_Date":     r["_mls_date"].strftime("%Y-%m-%d") if pd.notna(r["_mls_date"]) else "",
             "CAMA_SALEDT":         r["_cama_date"].strftime("%Y-%m-%d") if pd.notna(r["_cama_date"]) else "",

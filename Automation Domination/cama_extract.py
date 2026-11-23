@@ -78,6 +78,26 @@ def _excluded_salekeys(cur, rows, cols) -> dict:
     return excluded
 
 
+def _situs_addresses(cur, rows, cols, tax_year) -> dict:
+    """Return {parid: "6705 ARLINGTON AVE NW"} from PARDAT for the extract's parcels.
+    compare.py uses it to confirm likely parcel-typo pairs by address, so a
+    same-price, same-week sale of an unrelated house is not offered as a match."""
+    i = cols.index("PARID")
+    parids = sorted({str(r[i]).strip() for r in rows if r[i] is not None})
+    out = {}
+    for start in range(0, len(parids), 500):         # Oracle caps IN lists at 1000
+        chunk = parids[start:start + 500]
+        binds = ",".join(f":{n + 1}" for n in range(len(chunk)))
+        cur.execute(f"SELECT PARID, ADRNO, ADRADD, ADRDIR, ADRSTR, ADRSUF, ADRSUF2 "
+                    f"FROM PARDAT WHERE TAXYR = {int(tax_year)} AND CUR = 'Y' "
+                    f"AND PARID IN ({binds})", chunk)
+        for parid, *parts in cur.fetchall():
+            addr = " ".join(str(x).strip() for x in parts if x is not None and str(x).strip())
+            if addr:
+                out[str(parid).strip()] = addr
+    return out
+
+
 def extract_cama(output_path: Path, run_date=None, start_date=None, end_date=None,
                  tax_year: int = CAMA_TAX_YEAR) -> pd.DataFrame:
     """
@@ -145,6 +165,7 @@ def extract_cama(output_path: Path, run_date=None, start_date=None, end_date=Non
             cols = [col[0].upper() for col in cur.description]
             rows = cur.fetchall()
             excluded = _excluded_salekeys(cur, rows, cols)
+            situs    = _situs_addresses(cur, rows, cols, tax_year)
     except oracledb.Error as e:
         print(f"  ✗ Query failed: {e}")
         conn.close()
@@ -154,6 +175,7 @@ def extract_cama(output_path: Path, run_date=None, start_date=None, end_date=Non
 
     df = pd.DataFrame(rows, columns=cols)
     print(f"  ✓ {len(df)} rows returned from Oracle")
+    df["SITUS_ADDRESS"] = df["PARID"].astype(str).str.strip().map(situs).fillna("")
 
     if excluded:
         first_key = df["SALEKEY"].astype(str).str.split(",").str[0].str.strip()
