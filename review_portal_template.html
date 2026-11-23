@@ -1699,7 +1699,7 @@ function App() {
       {/* Top bar */}
       <div style={{background:"#0f172a",padding:"0 16px",display:"flex",alignItems:"center",justifyContent:"space-between",height:52,position:"sticky",top:0,zIndex:100,borderBottom:"1px solid #1e293b"}}>
         <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0}}>
-          <button onClick={()=>setView("home")} style={{background:"none",border:"none",color:"#7dd3fc",cursor:"pointer",fontSize:13,fontFamily:"'DM Mono',monospace",padding:"4px 8px",borderRadius:6,flexShrink:0}}>← Back</button>
+          <button onClick={()=>setView("home")} style={{background:"none",border:"none",color:"#7dd3fc",cursor:"pointer",fontSize:13,fontFamily:"'DM Mono',monospace",padding:"4px 8px",borderRadius:6,flexShrink:0}}>Back</button>
           <span style={{fontFamily:"'Syne',sans-serif",color:"#f8fafc",fontSize:14,fontWeight:800,letterSpacing:"-0.01em",whiteSpace:"nowrap"}}>MLS/CAMA Review</span>
           {/* Week switcher */}
           {Object.keys(sessions).length > 1 && (
@@ -1790,12 +1790,12 @@ function App() {
         )}
         {totalPages>1&&(
           <div style={{display:"flex",justifyContent:"center",alignItems:"center",gap:8,marginTop:32,paddingBottom:32}}>
-            <button disabled={page===0} onClick={()=>setPage(p=>p-1)} style={{padding:"7px 16px",borderRadius:8,border:"1.5px solid #d1d5db",background:page===0?"#f9fafb":"#fff",cursor:page===0?"not-allowed":"pointer",color:page===0?"#9ca3af":"#374151",fontFamily:"'DM Mono',monospace",fontSize:12}}>← Prev</button>
+            <button disabled={page===0} onClick={()=>setPage(p=>p-1)} style={{padding:"7px 16px",borderRadius:8,border:"1.5px solid #d1d5db",background:page===0?"#f9fafb":"#fff",cursor:page===0?"not-allowed":"pointer",color:page===0?"#9ca3af":"#374151",fontFamily:"'DM Mono',monospace",fontSize:12}}>Previous</button>
             {Array.from({length:Math.min(totalPages,7)},(_,i)=>{
               const pNum=totalPages<=7?i:Math.max(0,Math.min(page-3,totalPages-7))+i;
               return <button key={pNum} onClick={()=>setPage(pNum)} style={{padding:"7px 12px",borderRadius:8,border:"1.5px solid",borderColor:page===pNum?"#2563eb":"#d1d5db",background:page===pNum?"#dbeafe":"#fff",color:page===pNum?"#1d4ed8":"#374151",fontFamily:"'DM Mono',monospace",fontSize:12,cursor:"pointer"}}>{pNum+1}</button>;
             })}
-            <button disabled={page===totalPages-1} onClick={()=>setPage(p=>p+1)} style={{padding:"7px 16px",borderRadius:8,border:"1.5px solid #d1d5db",background:page===totalPages-1?"#f9fafb":"#fff",cursor:page===totalPages-1?"not-allowed":"pointer",color:page===totalPages-1?"#9ca3af":"#374151",fontFamily:"'DM Mono',monospace",fontSize:12}}>Next →</button>
+            <button disabled={page===totalPages-1} onClick={()=>setPage(p=>p+1)} style={{padding:"7px 16px",borderRadius:8,border:"1.5px solid #d1d5db",background:page===totalPages-1?"#f9fafb":"#fff",cursor:page===totalPages-1?"not-allowed":"pointer",color:page===totalPages-1?"#9ca3af":"#374151",fontFamily:"'DM Mono',monospace",fontSize:12}}>Next</button>
           </div>
         )}
       </div>
