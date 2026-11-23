@@ -652,15 +652,31 @@ def run_comparison(df_mls: pd.DataFrame, df_cama: pd.DataFrame,
         tolerance = np.where(close_price > 0, SALE_PRICE_TOLERANCE, PENDING_PRICE_TOLERANCE)
         price_ok = (ref_price > 0) & ((cama_price - ref_price).abs()
                                       <= tolerance * ref_price)
+        # A listing still pending in the export (no close price) that was listed
+        # on or before the CAMA sale is this sale, whatever the list price —
+        # W48: 151 Overlook Dr listed $165,000, sold $130,000; 13060 Beeson St NE
+        # listed $125,000, PS deed $194,838. The price test only exists to stop
+        # an earlier *closed* sale pairing with this week's.
+        if "List Date" in merged.columns and "SALEDT" in merged.columns:
+            list_dt = pd.to_datetime(merged["List Date"], errors="coerce")
+            sale_dt = pd.to_datetime(merged["SALEDT"], errors="coerce")
+            pending_ok = (close_price <= 0) & list_dt.notna() & (list_dt <= sale_dt)
+            for _, r in merged[both & ~price_ok & pending_ok].iterrows():
+                print(f"  Parcel {str(r[cama_id]).lstrip('0')}: MLS listing {r.get('Listing #', '')} "
+                      f"is pending (list ${ref_price[r.name]:,.0f}, CAMA sale "
+                      f"${cama_price[r.name]:,.0f}) — paired anyway, price differs")
+            price_ok = price_ok | pending_ok
         bad = merged[both & ~price_ok]
         if len(bad):
             matched_ids = set(merged.loc[both & price_ok, cama_id])
             mls_cols  = [c for c in df_mls_r.columns if c != cama_id and c in merged.columns]
             cama_cols = [c for c in df_cama.columns if c != cama_id and c in merged.columns]
             for _, r in bad.iterrows():
+                tail = ("skipped; another listing for this parcel matches"
+                        if r[cama_id] in matched_ids else "not paired")
                 print(f"  Parcel {str(r[cama_id]).lstrip('0')}: MLS listing {r.get('Listing #', '')} "
                       f"(${ref_price[r.name]:,.0f}) doesn't match the CAMA sale "
-                      f"(${cama_price[r.name]:,.0f}) — not paired")
+                      f"(${cama_price[r.name]:,.0f}) — {tail}")
             mls_only = bad.copy()
             mls_only[cama_cols] = np.nan
             mls_only["_merge"] = "left_only"
