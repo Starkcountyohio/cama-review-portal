@@ -272,6 +272,10 @@ class ZillowDownloader:
         words = s.split()
         number = words[0] if words and words[0][0].isdigit() else ""
         street_word = words[1] if len(words) > 1 else ""
+        # MLS and Zillow spell some streets differently (W48: "505 23 St NW" vs
+        # "505 23rd St NW", "St Leger" vs "Saint Leger") — compare a normal form.
+        street_word = re.sub(r"^(\d+)(ST|ND|RD|TH)$", r"\1", street_word)
+        street_word = {"SAINT": "ST", "MOUNT": "MT", "FORT": "FT"}.get(street_word, street_word)
         return number, street_word, unit.group(1) if unit else ""
 
     def get_all_photo_urls(self, property_url, address):
