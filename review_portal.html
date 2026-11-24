@@ -1035,7 +1035,7 @@ function loadArchiveIndex() {
 
 function loadArchive(weekKey) {
   if (!GITHUB_PAGES_BASE) return Promise.resolve(null);
-  return fetch(GITHUB_PAGES_BASE + "/archive/" + weekKey + ".json")
+  return fetch(GITHUB_PAGES_BASE + "/archive/" + weekKey + ".json?t=" + Date.now())
     .then(function(r) { return r.ok ? r.json() : null; })
     .catch(function() { return null; });
 }
