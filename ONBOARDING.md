@@ -186,6 +186,29 @@ Ignore these known non-issues:
 - Auction/Kiko sales showing "missing in MLS" = posting lag, self-corrects.
 - `likely_parcel_mismatches` file = advisory only, glance and dismiss.
 
+**How the compare decides it pulled the right sale (from W48, 2026-11-23):**
+- **Likely parcel typos must match on address.** The CAMA extract adds
+  `SITUS_ADDRESS` from PARDAT. A typo pair is offered only when the house number
+  matches and the street name is close, so MLS's "Clifmont" still matches
+  iasWorld's "CLIFTMONT". Before this check, price + date alone flagged three
+  unrelated houses in W48 that happened to sell for the same price the same week.
+  The run prints how many hits the address check dropped. If the file isn't
+  written at all, there were no real typo candidates.
+- **Pending listings pair whatever the price.** A listing with no close price yet,
+  listed on or before the CAMA sale, is treated as the same sale. Each one is
+  printed as "is pending … paired anyway, price differs". Glance at those lines.
+- **Closed listings still need the price to agree** (within 10%). A
+  "doesn't match the CAMA sale — not paired" line means the parcel stays out of
+  the portal. "Skipped; another listing for this parcel matches" is a flip's
+  older listing and needs no action.
+- **Split deeds aren't summed.** In W48, 6705 Arlington Ave NW sold for $600k
+  in MLS but was recorded in CAMA as two $300k deeds the same day. The extract
+  keeps one deed, so the price check fails and the parcel isn't in the portal.
+  Add a parcel like that by hand if it matters.
+- **Looking up sales by hand:** filter `SALES` on `CUR = 'Y'`. A deleted and
+  re-entered sale keeps its old key with `CUR = 'D'`, which looks like a
+  duplicate sale but isn't.
+
 ### 2. Fix bad photos at the review gate
 Zillow sometimes returns a **realtor headshot** or wrong house instead of an
 exterior. For each bad one, look up its MLS number (match the parcel ID against
@@ -391,6 +414,23 @@ operator right now:
   when a loader does arrive. Photos are not hand-uploaded parcel by parcel.
 
 ---
+
+## Portal troubleshooting (staff reports)
+
+- **A parcel goes back to unreviewed after a refresh, even though Reviewed was
+  clicked.** The cause is the tracker's Google Sheet, not the portal. The Sheet
+  has **two rows for the same parcel and week**: the save updates one row, and
+  the read returns the other, blank one. Fix it by opening the tracker Sheet,
+  filtering on the parcel ID, and deleting the extra row for that week (W34
+  parcel 6900356, 2026-11-24). The save request itself returns `ok`, so nothing
+  in the portal shows an error.
+- **A past week shows the wrong parcels** (e.g. "36 unreviewed, 0 reviewed"). That
+  week's `archive/<week>.json` was overwritten by a later build. W16 was restored
+  on 2026-11-24 from the parcels embedded in an old `review_portal.html` in git
+  history. If the tracker's statuses don't match the archive's parcel IDs, look
+  there for the original.
+- **A fix is pushed but staff still see the old version.** GitHub Pages lets
+  browsers cache files for up to 10 minutes. Have them press **Ctrl+Shift+R**.
 
 ## Annual rollover (each January)
 > **January 2027: check with Bethany before bumping.** After the Nov 2026 mass

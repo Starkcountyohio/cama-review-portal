@@ -169,6 +169,12 @@ necessarily gone): "fixer", "tlc", "cash only", "updated throughout", "new windo
 - iasWorld and Zillow open in named windows: "iasWorldWindow" and "zillowWindow"
 - SharePoint cannot render HTML files directly — GitHub Pages is the solution
 - localStorage cannot share state across remote users — no shared persistence currently
+- Status shows unreviewed after refresh despite clicking Reviewed → caused by the
+  tracker Google Sheet (duplicate parcel+week rows), not the portal; delete the extra
+  row. See ONBOARDING.md "Portal troubleshooting".
+- Compare verifies the sale: likely-typo pairs need a matching address (SITUS_ADDRESS
+  from PARDAT); pending listings pair regardless of price; same-day split deeds are
+  not summed. See ONBOARDING.md §1.
 - Photos embed as base64 in HTML — 60-100 photos ≈ 20-40MB output file
 
 ---
